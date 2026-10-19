@@ -145,6 +145,7 @@ The Pico LED stays on, and goes dark for a second each time a wake advert fires.
 | 5000     | Client                              |
 | 5050     | Node: health, WebSocket, WHEP proxy |
 | 8189 UDP | WebRTC ICE / RTP                    |
+| 8189 TCP | WebRTC over TCP (for Wi-Fi that blocks UDP) |
 
 ## Development
 
@@ -171,6 +172,7 @@ Firmware and packet: keep `apps/node/src/utils/packet.ts` in sync with `firmware
 | `GET /health`             | Capture, Pico, `occupied` seats                              |
 | `GET /socket`             | WebSocket                                                    |
 | `POST /switch/whep`       | Video WHEP; `PATCH` / `DELETE` `/switch/whep/:session`       |
+| `POST /switch-lite/whep`  | Lite video WHEP (540p, slow networks); same `PATCH` / `DELETE` |
 | `POST /switch-audio/whep` | Audio WHEP; `PATCH` / `DELETE` `/switch-audio/whep/:session` |
 
 - Client: `{ op: "play", data: { count } }` / `{ op: "watch" }` / `{ op: "pad", data: PadState, seat }`

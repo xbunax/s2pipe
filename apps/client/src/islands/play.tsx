@@ -6,18 +6,11 @@ import type { CaptureStatus, ClientMessage, PicoStatus, ServerMessage } from "@s
 import { neutralPad, PAD_COUNT, type PadState, samePad } from "@s2pipe/shared/types/pad";
 
 import { createInputTracker, type GamepadOption, listGamepads } from "../utils/input.ts";
-import {
-	type AudioWhepHandle,
-	onWhepDead,
-	readStreamStats,
-	startAudioWhep,
-	startWhep,
-	type StreamStats,
-	type WhepHandle,
-} from "../utils/whep.ts";
+import { useStream } from "../utils/use-stream.ts";
+import { useStreamStats } from "../utils/use-stream-stats.ts";
 import { nodePassword } from "../utils/authorization.ts";
 import { holdPage } from "../utils/page-session.ts";
-import { loadPlayPrefs, savePlayPrefs } from "../utils/prefs.ts";
+import { loadPlayPrefs, type Quality, savePlayPrefs } from "../utils/prefs.ts";
 import {
 	createVirtualPad,
 	defaultVirtualPrefs,
@@ -62,6 +55,10 @@ function padLabel(id: string): string {
 	return name || id;
 }
 
+function formatMs(value: number | null | undefined): string {
+	return value == null ? "-" : `${value} ms`;
+}
+
 const NEUTRAL = neutralPad();
 
 function sameIds(a: number[], b: number[]): boolean {
@@ -95,13 +92,10 @@ function streamBanner(
 export default function Play({ nodeUrl }: Props) {
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const stageRef = useRef<HTMLElement>(null);
-	const whepRef = useRef<WhepHandle | null>(null);
-	const audioRef = useRef<AudioWhepHandle | null>(null);
 	const wsRef = useRef<WebSocket | null>(null);
 	const inputRef = useRef<ReturnType<typeof createInputTracker> | null>(null);
 	const virtualRef = useRef<VirtualPad | null>(null);
 	const persistVirtual = useRef(false);
-	const statsPrev = useRef<{ bytes: number; at: number } | null>(null);
 	const toastSeq = useRef(0);
 	const pendingPlays = useRef(0);
 	const persistPrefs = useRef(false);
@@ -121,7 +115,10 @@ export default function Play({ nodeUrl }: Props) {
 	const volume = useSignal(1);
 	const fill = useSignal(false);
 	const showStats = useSignal(false);
-	const stats = useSignal<StreamStats | null>(null);
+	const quality = useSignal<Quality>("auto");
+	// The lite stream is in use. Auto turns it on after a bad network spell and keeps it for the session.
+	const lite = useSignal(false);
+	const prefsLoaded = useSignal(false);
 	const fullscreen = useSignal(false);
 	const live = useSignal(false);
 	const toasts = useSignal<Toast[]>([]);
@@ -132,7 +129,10 @@ export default function Play({ nodeUrl }: Props) {
 		volume.value = prefs.volume;
 		fill.value = prefs.fill;
 		showStats.value = prefs.showStats;
+		quality.value = prefs.quality;
+		lite.value = prefs.quality === "lite";
 		virtualPrefs.value = loadVirtualPrefs();
+		prefsLoaded.value = true;
 	}, []);
 
 	useEffect(() => {
@@ -145,8 +145,9 @@ export default function Play({ nodeUrl }: Props) {
 			volume: volume.value,
 			fill: fill.value,
 			showStats: showStats.value,
+			quality: quality.value,
 		});
-	}, [muted.value, volume.value, fill.value, showStats.value]);
+	}, [muted.value, volume.value, fill.value, showStats.value, quality.value]);
 
 	useEffect(() => {
 		if (!persistVirtual.current) {
@@ -180,80 +181,16 @@ export default function Play({ nodeUrl }: Props) {
 		}, 4200);
 	}
 
-	// WHEP connection (video + audio)
-	useEffect(() => {
-		const video = videoRef.current;
-		if (!video) return;
-		let cancelled = false;
-		let videoHandle: WhepHandle | null = null;
-		let audioHandle: AudioWhepHandle | null = null;
-		let retryTimer: ReturnType<typeof setTimeout> | undefined;
-		let iceHinted = false;
-
-		const cleanupWhep = () => {
-			void videoHandle?.close();
-			void audioHandle?.close();
-			videoHandle = null;
-			audioHandle = null;
-			whepRef.current = null;
-			audioRef.current = null;
-		};
-
-		const connect = async () => {
-			try {
-				videoHandle = await startWhep(nodeUrl, video);
-				if (cancelled) {
-					void videoHandle.close();
-					videoHandle = null;
-					return;
-				}
-				whepRef.current = videoHandle;
-				live.value = true;
-
-				onWhepDead(videoHandle.pc, (hadMedia) => {
-					if (!hadMedia && !iceHinted) {
-						iceHinted = true;
-						toast("ICE failed. Set MEDIA_ICE_IP to this machine's LAN address, not 127.0.0.1.");
-					}
-					if (!cancelled) {
-						live.value = false;
-						cleanupWhep();
-						retryTimer = globalThis.setTimeout(connect, hadMedia ? 1500 : 2000);
-					}
-				});
-			} catch {
-				if (!cancelled) {
-					retryTimer = globalThis.setTimeout(connect, 2000);
-				}
-				return;
-			}
-
-			try {
-				audioHandle = await startAudioWhep(nodeUrl);
-				if (cancelled) {
-					cleanupWhep();
-					return;
-				}
-				if (audioHandle) {
-					audioRef.current = audioHandle;
-					audioHandle.audio.muted = muted.value;
-					audioHandle.audio.volume = volume.value;
-				}
-			} catch {
-				// Audio can fail without blocking video
-			}
-		};
-
-		void connect();
-
-		return holdPage(() => {
-			cancelled = true;
-			clearTimeout(retryTimer);
-			cleanupWhep();
-			video.pause();
-			video.srcObject = null;
-		});
-	}, [nodeUrl]);
+	const { whepRef, audioRef } = useStream({
+		nodeUrl,
+		video: videoRef,
+		lite: lite.value,
+		enabled: prefsLoaded.value,
+		live,
+		muted,
+		volume,
+		toast,
+	});
 
 	useEffect(() => {
 		// deno-lint-ignore no-explicit-any
@@ -502,22 +439,15 @@ export default function Play({ nodeUrl }: Props) {
 		audio.volume = volume.value;
 	}, [muted.value, volume.value, live.value]);
 
-	// Stream stats
-	useEffect(() => {
-		if (!showStats.value) {
-			stats.value = null;
-			return;
-		}
-		const timer = globalThis.setInterval(() => {
-			const pc = whepRef.current?.pc;
-			if (!pc) return;
-			readStreamStats(pc, statsPrev.current).then((result) => {
-				statsPrev.current = result.prev;
-				stats.value = result.stats;
-			}).catch(() => {});
-		}, 1000);
-		return holdPage(() => clearInterval(timer));
-	}, [showStats.value]);
+	const stats = useStreamStats({
+		whep: whepRef,
+		show: showStats.value,
+		watchNetwork: quality.value === "auto" && !lite.value,
+		onSlow: () => {
+			lite.value = true;
+			toast("Slow network: switched to the lite stream.");
+		},
+	});
 
 	// Fullscreen
 	useEffect(() => {
@@ -529,6 +459,11 @@ export default function Play({ nodeUrl }: Props) {
 		document.addEventListener("fullscreenchange", onFs);
 		return holdPage(() => document.removeEventListener("fullscreenchange", onFs));
 	}, []);
+
+	function setQuality(value: Quality): void {
+		quality.value = value;
+		lite.value = value === "lite";
+	}
 
 	function syncSeats(count: number): void {
 		const ws = wsRef.current;
@@ -645,6 +580,22 @@ export default function Play({ nodeUrl }: Props) {
 					<div>
 						<dt>Lost</dt>
 						<dd>{stats.value ? stats.value.packetsLost : "-"}</dd>
+					</div>
+					<div>
+						<dt>RTT</dt>
+						<dd>{formatMs(stats.value?.rttMs)}</dd>
+					</div>
+					<div>
+						<dt>Jitter buffer</dt>
+						<dd>{formatMs(stats.value?.jitterBufferMs)}</dd>
+					</div>
+					<div>
+						<dt>Decode</dt>
+						<dd>{formatMs(stats.value?.decodeMs)}</dd>
+					</div>
+					<div>
+						<dt>Dropped</dt>
+						<dd>{stats.value?.framesDropped ?? "-"}</dd>
 					</div>
 				</dl>
 			)}
@@ -801,6 +752,22 @@ export default function Play({ nodeUrl }: Props) {
 								if (volume.value > 0) muted.value = false;
 							}}
 						/>
+					</label>
+
+					<label className="field">
+						<span>Quality</span>
+						<select
+							value={quality.value}
+							onChange={(event) => setQuality((event.target as HTMLSelectElement).value as Quality)}
+						>
+							<option value="auto">
+								{lite.value && quality.value === "auto"
+									? "Auto (using lite)"
+									: "Auto (lite on a slow network)"}
+							</option>
+							<option value="full">Full</option>
+							<option value="lite">Lite (540p, light on bandwidth)</option>
+						</select>
 					</label>
 
 					<label>

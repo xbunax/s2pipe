@@ -1,21 +1,31 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct Ffmpeg {
     pub child: Child,
+    /// A custom encoder feeding FFmpeg's stdin. It lives and dies with FFmpeg.
+    source: Option<Child>,
     out_time_us: Arc<AtomicI64>,
 }
 
-impl Ffmpeg {
-    pub fn kill(mut self) {
-        kill_child(&mut self.child);
+impl Drop for Ffmpeg {
+    /// A worker that stops for any reason must not leave FFmpeg or its source holding the capture device.
+    fn drop(&mut self) {
+        if self.alive() {
+            kill_child(&mut self.child);
+        }
+        if let Some(source) = &mut self.source {
+            kill_source(source);
+        }
     }
+}
 
+impl Ffmpeg {
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
@@ -43,6 +53,15 @@ impl Ffmpeg {
 
 pub(crate) fn kill_child(child: &mut Child) {
     kill_pid_force(child.id());
+    let _ = child.wait();
+}
+
+/// `kill_child` only touches processes the launcher installed; a custom encoder is the user's own.
+fn kill_source(child: &mut Child) {
+    #[cfg(windows)]
+    kill_pid(child.id());
+    #[cfg(unix)]
+    let _ = child.kill();
     let _ = child.wait();
 }
 
@@ -82,12 +101,6 @@ fn spawn(command: &mut Command, label: &str) -> Result<Child, String> {
         .map_err(|e| format!("Failed to start {label}: {e}"))
 }
 
-fn abandon<T>(mut child: Child, message: String) -> Result<T, String> {
-    let _ = child.kill();
-    let _ = child.wait();
-    Err(message)
-}
-
 pub fn spawn_logged(mut command: Command, label: &str, log: &Path) -> Result<u32, String> {
     let file = create_log(log, false)?;
     let stderr = file
@@ -102,26 +115,79 @@ pub fn spawn_logged(mut command: Command, label: &str, log: &Path) -> Result<u32
     spawn(&mut command, label).map(|child| child.id())
 }
 
-pub fn spawn_ffmpeg(mut command: Command, label: &str, log: &Path) -> Result<Ffmpeg, String> {
-    // `-progress pipe:2`: stdout is buffered on Windows and never delivers
-    // `out_time_us=`. stderr is not.
+/// Runs a user command through the shell with its stdout piped, so it can feed FFmpeg.
+/// Its errors go to the log. It stays in the worker's process group like FFmpeg does.
+pub fn spawn_source(line: &str, log: &Path) -> Result<Child, String> {
+    let file = create_log(log, true)?;
+
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(line);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new("cmd");
+        command.arg("/C").raw_arg(line).creation_flags(0x0800_0000);
+        command
+    };
+
     command
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(file));
+    let child = spawn(&mut command, "custom encoder")?;
+    #[cfg(windows)]
+    tie_to_job(&child);
+    Ok(child)
+}
+
+pub fn spawn_ffmpeg(
+    mut command: Command,
+    label: &str,
+    log: &Path,
+    mut source: Option<Child>,
+) -> Result<Ffmpeg, String> {
+    // `-progress pipe:2`: stdout is buffered on Windows and never delivers
+    // `out_time_us=`. stderr is not.
+    let input = source
+        .as_mut()
+        .and_then(|source| source.stdout.take())
+        .map_or_else(Stdio::null, Stdio::from);
+    command
+        .stdin(input)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // On Unix FFmpeg stays in the watchdog's process group, so killing that group takes it along.
-    // A group of its own would outlive the watchdog and keep the capture device busy.
+    // On Unix FFmpeg stays in the worker's process group, so killing that group takes it along.
+    // A group of its own would outlive the worker and keep the capture device busy.
     #[cfg(windows)]
     detach(&mut command);
-    let mut child = spawn(&mut command, label)?;
-    let Some(stderr) = child.stderr.take() else {
-        return abandon(child, format!("Failed to open {label} progress pipe"));
+    let child = match spawn(&mut command, label) {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(source) = &mut source {
+                kill_source(source);
+            }
+            return Err(error);
+        }
     };
-    let out_time_us = Arc::new(AtomicI64::new(0));
-    let clock = out_time_us.clone();
+    #[cfg(windows)]
+    tie_to_job(&child);
+    // From here on, dropping `ffmpeg` kills both processes.
+    let mut ffmpeg = Ffmpeg {
+        child,
+        source,
+        out_time_us: Arc::new(AtomicI64::new(0)),
+    };
+    let Some(stderr) = ffmpeg.child.stderr.take() else {
+        return Err(format!("Failed to open {label} progress pipe"));
+    };
+    let clock = ffmpeg.out_time_us.clone();
     let mut log = create_log(log, true)?;
     std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().flatten() {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             if let Some(n) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse().ok()) {
                 clock.store(n, Ordering::Relaxed);
             } else if line.contains(' ') {
@@ -129,36 +195,58 @@ pub fn spawn_ffmpeg(mut command: Command, label: &str, log: &Path) -> Result<Ffm
             }
         }
     });
-    Ok(Ffmpeg { child, out_time_us })
+    Ok(ffmpeg)
 }
 
-pub fn spawn_worker(
-    mut command: Command,
-    label: &str,
-    log: &Path,
-    input: &[u8],
-) -> Result<(Child, ChildStdout), String> {
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(create_log(log, false)?));
-    detach(&mut command);
-
-    let mut child = spawn(&mut command, label)?;
-    let Some(mut stdin) = child.stdin.take() else {
-        return abandon(child, format!("Failed to open {label} input pipe"));
+/// The job that kills everything in it when this process ends, however it ends.
+#[cfg(windows)]
+fn kill_on_close_job() -> Option<windows::Win32::Foundation::HANDLE> {
+    use std::sync::OnceLock;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    if let Err(error) = stdin.write_all(input) {
-        return abandon(child, format!("Failed to configure {label}: {error}"));
+
+    static JOB: OnceLock<Option<isize>> = OnceLock::new();
+
+    JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(None, PCWSTR::null()).ok()?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if configured.is_err() {
+            let _ = CloseHandle(job);
+            return None;
+        }
+        Some(job.0 as isize)
+    })
+    .map(|job| HANDLE(job as *mut std::ffi::c_void))
+}
+
+/// Puts a child in that job, so a worker killed outright cannot leave FFmpeg or a custom
+/// encoder behind. Best effort, since failing to start the stream over it would be worse:
+/// the failure is logged, and the stream runs without that protection.
+#[cfg(windows)]
+fn tie_to_job(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::AssignProcessToJobObject;
+
+    let Some(job) = kill_on_close_job() else {
+        eprintln!("WORKER: could not create the job that stops child processes with the worker");
+        return;
+    };
+    if let Err(error) = unsafe { AssignProcessToJobObject(job, HANDLE(child.as_raw_handle())) } {
+        eprintln!("WORKER: could not tie PID {} to the worker: {error}", child.id());
     }
-    drop(stdin);
-    let Some(stdout) = child.stdout.take() else {
-        return abandon(child, format!("Failed to open {label} output pipe"));
-    };
-
-    Ok((child, stdout))
 }
-
 fn log_tail(path: &Path, n: usize) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();

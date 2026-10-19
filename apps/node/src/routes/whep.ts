@@ -1,6 +1,8 @@
 import { type HttpRequest, type HttpResponse, Router } from "@webtools/expressapi";
 import { config } from "@/config.ts";
 
+const PATHS = ["switch", "switch-lite", "switch-audio"];
+
 async function forward(req: HttpRequest, res: HttpResponse): Promise<Response> {
 	const url = new URL(req.raw.url);
 	url.protocol = "http:";
@@ -36,10 +38,12 @@ async function forward(req: HttpRequest, res: HttpResponse): Promise<Response> {
 	}
 }
 
-export default new Router()
-	.post("/switch/whep", forward)
-	.patch("/switch/whep/:session", forward)
-	.delete("/switch/whep/:session", forward)
-	.post("/switch-audio/whep", forward)
-	.patch("/switch-audio/whep/:session", forward)
-	.delete("/switch-audio/whep/:session", forward);
+const router = new Router();
+for (const path of PATHS) {
+	router
+		.post(`/${path}/whep`, forward)
+		.patch(`/${path}/whep/:session`, forward)
+		.delete(`/${path}/whep/:session`, forward);
+}
+
+export default router;

@@ -1,5 +1,7 @@
 import { showError, showSuccess, Toasters, useToasters } from "./components/Toast.tsx";
 import { DevicePicker } from "./components/DevicePicker.tsx";
+import { VideoAdvanced } from "./components/VideoAdvanced.tsx";
+import type { AppConfig } from "./types.ts";
 import { useEffect, useState } from "preact/hooks";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -28,36 +30,6 @@ interface WakeScanResult {
 	controllerBtPid: string;
 }
 
-interface AppConfig {
-	nodePort: string;
-	nodeBaseUrl: string;
-	nodePassword: string;
-	clientPort: string;
-	exposure: string;
-
-	mediaIceIp: string;
-	mediaIcePort: string;
-
-	captureSource: string;
-	captureDevice: string;
-	captureAudio: string;
-	captureFormat: string;
-	captureWidth: number;
-	captureHeight: number;
-	captureFps: number;
-
-	videoEncoder: string;
-	videoCodec: string;
-	videoBitrate: string;
-
-	picoSerial: string;
-
-	switchBtMac: string;
-	controllerBtMac: string;
-	controllerBtPid: string;
-
-	launchAtStartup: boolean;
-}
 
 /* -------------------------------------------------------------------------- */
 /* Defaults                                                                   */
@@ -84,6 +56,8 @@ const DEFAULT_CONFIG: AppConfig = {
 	videoEncoder: "auto",
 	videoCodec: "h264",
 	videoBitrate: "6M",
+	videoCustom: "",
+	idleStopSeconds: 15,
 
 	picoSerial: "",
 
@@ -958,246 +932,7 @@ function App() {
 							</div>
 						</div>
 
-						{advancedMode && (
-							<>
-								<div className="fields-grid advanced">
-									<div className="field">
-										<label>
-											<span>Encoder</span>
-
-											<select
-												id="videoEncoder"
-												value={config.videoEncoder}
-												onChange={(event) =>
-													updateConfig(
-														"videoEncoder",
-														(
-															event.currentTarget as HTMLSelectElement
-														).value,
-													)}
-											>
-												<option value="auto">
-													Auto (use the GPU if there is one)
-												</option>
-
-												<option value="cpu">
-													CPU (x264/x265)
-												</option>
-
-												<option value="nvenc">
-													NVIDIA (NVENC)
-												</option>
-
-												<option value="amf">
-													AMD (AMF)
-												</option>
-											</select>
-										</label>
-									</div>
-
-									<div className="field">
-										<label>
-											<span>Codec</span>
-
-											<select
-												id="videoCodec"
-												value={config.videoCodec}
-												onChange={(event) =>
-													updateConfig(
-														"videoCodec",
-														(
-															event.currentTarget as HTMLSelectElement
-														).value,
-													)}
-											>
-												<option value="h264">
-													H.264
-												</option>
-
-												<option value="h265">
-													H.265 (HEVC)
-												</option>
-											</select>
-										</label>
-									</div>
-								</div>
-
-								<small>
-									{config.videoCodec === "h265"
-										? "H.265 halves the bitrate but many browsers cannot play it over WebRTC. Use H.264 if the picture stays black."
-										: "H.264 plays everywhere. Auto falls back to the CPU when no GPU encoder answers."}
-								</small>
-
-								<div className="fields-grid advanced">
-									<div className="field">
-										<label>
-											<span>Width</span>
-
-											<input
-												id="captureWidth"
-												type="number"
-												min="1"
-												value={config.captureWidth}
-												onInput={(event) =>
-													updateConfig(
-														"captureWidth",
-														Number(
-															(
-																event.currentTarget as HTMLInputElement
-															).value,
-														),
-													)}
-											/>
-										</label>
-									</div>
-
-									<div className="field">
-										<label>
-											<span>Height</span>
-
-											<input
-												id="captureHeight"
-												type="number"
-												min="1"
-												value={config.captureHeight}
-												onInput={(event) =>
-													updateConfig(
-														"captureHeight",
-														Number(
-															(
-																event.currentTarget as HTMLInputElement
-															).value,
-														),
-													)}
-											/>
-										</label>
-									</div>
-								</div>
-
-								<div className="fields-grid advanced">
-									<div className="field">
-										<label>
-											<span>FPS</span>
-
-											<input
-												id="captureFps"
-												type="number"
-												min="1"
-												max="120"
-												value={config.captureFps}
-												onInput={(event) =>
-													updateConfig(
-														"captureFps",
-														Number(
-															(
-																event.currentTarget as HTMLInputElement
-															).value,
-														),
-													)}
-											/>
-										</label>
-									</div>
-
-									<div className="field">
-										<label>
-											<span>
-												Capture format
-											</span>
-
-											<select
-												id="captureFormat"
-												value={config.captureFormat}
-												onChange={(event) =>
-													updateConfig(
-														"captureFormat",
-														(
-															event.currentTarget as HTMLSelectElement
-														).value,
-													)}
-											>
-												<option value="yuyv422">
-													yuyv422
-												</option>
-
-												<option value="mjpeg">
-													mjpeg
-												</option>
-											</select>
-										</label>
-									</div>
-								</div>
-
-								<div className="fields-grid advanced">
-									<div className="field">
-										<label>
-											<span>
-												Video bitrate
-											</span>
-
-											<input
-												id="videoBitrate"
-												type="text"
-												value={config.videoBitrate}
-												onInput={(event) =>
-													updateConfig(
-														"videoBitrate",
-														(
-															event.currentTarget as HTMLInputElement
-														).value,
-													)}
-												placeholder="6M"
-											/>
-										</label>
-									</div>
-								</div>
-
-								<div className="fields-grid advanced">
-									<div className="field">
-										<label>
-											<span>
-												Capture device
-											</span>
-
-											<input
-												id="captureDevice"
-												type="text"
-												value={config.captureDevice}
-												onInput={(event) =>
-													updateConfig(
-														"captureDevice",
-														(
-															event.currentTarget as HTMLInputElement
-														).value,
-													)}
-												placeholder="/dev/video0"
-											/>
-										</label>
-									</div>
-
-									<div className="field">
-										<label>
-											<span>
-												HDMI audio (ALSA)
-											</span>
-
-											<input
-												id="captureAudioManual"
-												type="text"
-												value={config.captureAudio}
-												onInput={(event) =>
-													updateConfig(
-														"captureAudio",
-														(
-															event.currentTarget as HTMLInputElement
-														).value,
-													)}
-												placeholder="hw:0,0"
-											/>
-										</label>
-									</div>
-								</div>
-							</>
-						)}
+						{advancedMode && <VideoAdvanced config={config} updateConfig={updateConfig} />}
 					</fieldset>
 
 					{/* ---------------------------------------------------------------- */}

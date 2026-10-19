@@ -37,6 +37,9 @@ pub fn video(command: &mut Command, config: &AppConfig, loose: bool) -> Result<(
         "32",
         "-analyzeduration",
         "0",
+        // Stamp each frame with its arrival time instead of trusting the driver's clock.
+        "-use_wallclock_as_timestamps",
+        "1",
         "-thread_queue_size",
         "2048",
     ]);

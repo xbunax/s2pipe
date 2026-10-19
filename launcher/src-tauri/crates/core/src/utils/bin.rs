@@ -18,7 +18,7 @@ pub fn bin_path(name: &str) -> Result<PathBuf, String> {
 }
 
 /// Copy this process onto `~/.s2pipe/launcher`. If that file is locked by a
-/// running watchdog, the previous copy is kept.
+/// running encode worker, the previous copy is kept.
 pub fn install_launcher() -> Result<PathBuf, String> {
     ensure_app_directory()?;
     let dest = launcher_path()?;

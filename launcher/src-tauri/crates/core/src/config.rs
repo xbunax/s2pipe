@@ -21,9 +21,16 @@ pub struct AppConfig {
     pub capture_height: u32,
     pub capture_fps: u32,
 
+    /// auto, cpu, nvenc, amf, or custom to run `video_custom` instead of FFmpeg's encoders.
     pub video_encoder: String,
     pub video_codec: String,
+    /// Ceiling for busy scenes, not a target: quality is constant and quiet scenes cost less.
     pub video_bitrate: String,
+    /// Shell command printing H.264 Annex-B on stdout.
+    /// Placeholders: {device} {width} {height} {fps} {bitrate} (kbit/s) {gop} (frames).
+    pub video_custom: String,
+    /// Seconds without a viewer before capture and encoding stop. 0 keeps them always on.
+    pub idle_stop_seconds: u32,
 
     pub pico_serial: String,
 
@@ -54,6 +61,8 @@ impl Default for AppConfig {
             video_encoder: "auto".into(),
             video_codec: "h264".into(),
             video_bitrate: "6M".into(),
+            video_custom: String::new(),
+            idle_stop_seconds: 15,
             pico_serial: String::new(),
             switch_bt_mac: String::new(),
             controller_bt_mac: String::new(),
@@ -84,4 +93,24 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
 
 fn config_path() -> Result<std::path::PathBuf, String> {
     Ok(crate::utils::paths::app_directory()?.join("config.json"))
+}
+
+/// The configuration the running stack was started with, which can differ from
+/// `config.json` (CLI flags). MediaMTX launches the encode workers long after the
+/// start, and they read it from here.
+pub fn save_runtime_config(config: &AppConfig) -> Result<(), String> {
+    let json = serde_json::to_string(config)
+        .map_err(|e| format!("Failed to serialize runtime config: {e}"))?;
+    std::fs::write(runtime_config_path()?, json)
+        .map_err(|e| format!("Failed to write runtime config: {e}"))
+}
+
+pub fn load_runtime_config() -> Result<AppConfig, String> {
+    let json = std::fs::read_to_string(runtime_config_path()?)
+        .map_err(|e| format!("Failed to read runtime config: {e}"))?;
+    serde_json::from_str(&json).map_err(|e| format!("Invalid runtime config: {e}"))
+}
+
+fn runtime_config_path() -> Result<std::path::PathBuf, String> {
+    Ok(crate::utils::paths::app_directory()?.join("runtime.json"))
 }

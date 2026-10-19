@@ -29,9 +29,15 @@ fn block_on(task: impl std::future::Future<Output = Result<(), String>>, label: 
     }
 }
 
+/// Value after `--encode`: the stream (`video`, `audio`, `lite`) this process encodes for MediaMTX.
+pub fn encode_arg() -> Option<String> {
+    let mut args = std::env::args().skip_while(|arg| arg != "--encode");
+    args.nth(1)
+}
+
 /// Used by the GUI, which has no Tokio main of its own.
-pub fn run_watchdog() {
-    block_on(runtime::ffmpeg::run_watchdog(), "FFmpeg watchdog");
+pub fn run_worker(stream: &str) {
+    block_on(runtime::ffmpeg::run_worker(stream), "Encode worker");
 }
 
 /// Headless start for the boot service: no window and no display needed, errors go to stderr.

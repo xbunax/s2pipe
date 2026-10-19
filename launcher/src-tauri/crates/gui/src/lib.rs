@@ -2,7 +2,7 @@ mod commands;
 
 #[cfg(target_os = "linux")]
 use s2pipe_core::run_autostart;
-use s2pipe_core::{has_arg, install_launcher, load_config, run_watchdog, set_autostart, Stack};
+use s2pipe_core::{encode_arg, has_arg, install_launcher, load_config, run_worker, set_autostart, Stack};
 use tauri::{Emitter, Manager};
 
 fn show_window(app: &tauri::AppHandle) {
@@ -14,8 +14,8 @@ fn show_window(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
-    if has_arg("--watchdog") {
-        run_watchdog();
+    if let Some(stream) = encode_arg() {
+        run_worker(&stream);
         return;
     }
 

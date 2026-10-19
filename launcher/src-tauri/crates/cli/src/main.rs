@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use s2pipe_core::{
-    has_arg, install_launcher, load_config, run_autostart, run_watchdog, AppConfig, Stack,
+    encode_arg, has_arg, install_launcher, load_config, run_autostart, run_worker, AppConfig,
+    Stack,
 };
 
 #[derive(Parser)]
@@ -50,7 +51,7 @@ struct StartArgs {
     capture_height: Option<u32>,
     #[arg(long)]
     capture_fps: Option<u32>,
-    /// auto, cpu, nvenc or amf
+    /// auto, cpu, nvenc, amf or custom
     #[arg(long)]
     video_encoder: Option<String>,
     /// h264 or h265
@@ -58,6 +59,12 @@ struct StartArgs {
     video_codec: Option<String>,
     #[arg(long)]
     video_bitrate: Option<String>,
+    /// Command printing H.264 Annex-B on stdout, used when --video-encoder is custom
+    #[arg(long)]
+    video_custom: Option<String>,
+    /// Seconds without a viewer before encoding stops (0 = always on)
+    #[arg(long)]
+    idle_stop_seconds: Option<u32>,
     #[arg(long)]
     pico_serial: Option<String>,
     #[arg(long)]
@@ -104,6 +111,8 @@ impl StartArgs {
         overlay(&mut config.video_encoder, self.video_encoder);
         overlay(&mut config.video_codec, self.video_codec);
         overlay(&mut config.video_bitrate, self.video_bitrate);
+        overlay(&mut config.video_custom, self.video_custom);
+        overlay(&mut config.idle_stop_seconds, self.idle_stop_seconds);
         overlay(&mut config.pico_serial, self.pico_serial);
         overlay(&mut config.switch_bt_mac, self.switch_bt_mac);
         overlay(&mut config.controller_bt_mac, self.controller_bt_mac);
@@ -122,8 +131,8 @@ impl StartArgs {
 }
 
 fn main() {
-    if has_arg("--watchdog") {
-        run_watchdog();
+    if let Some(stream) = encode_arg() {
+        run_worker(&stream);
         return;
     }
     if has_arg("--autostart") {

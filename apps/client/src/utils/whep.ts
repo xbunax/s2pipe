@@ -11,7 +11,9 @@ export type AudioWhepHandle = {
 	close: () => Promise<void>;
 };
 
-const ice = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+// No STUN: the node is reachable, so the browser's peer-reflexive candidates are enough,
+// and gathering never waits on a STUN server that some networks block.
+const ice: RTCConfiguration = { iceServers: [] };
 
 function preferLowJitter(receiver: RTCRtpReceiver): void {
 	try {
@@ -34,7 +36,7 @@ function waitIceGathering(pc: RTCPeerConnection): Promise<void> {
 		const onChange = () => {
 			if (pc.iceGatheringState === "complete") done();
 		};
-		const timer = setTimeout(done, 2000);
+		const timer = setTimeout(done, 300);
 		pc.addEventListener("icegatheringstatechange", onChange);
 	});
 }
@@ -116,7 +118,7 @@ export function onWhepDead(pc: RTCPeerConnection, fn: (hadMedia: boolean) => voi
 	};
 }
 
-export async function startWhep(nodeUrl: string, video: HTMLVideoElement): Promise<WhepHandle> {
+export async function startWhep(nodeUrl: string, video: HTMLVideoElement, lite: boolean): Promise<WhepHandle> {
 	const pc = new RTCPeerConnection(ice);
 	pc.addTransceiver("video", { direction: "recvonly" });
 	video.muted = true;
@@ -128,7 +130,7 @@ export async function startWhep(nodeUrl: string, video: HTMLVideoElement): Promi
 		void video.play().catch(() => {});
 	});
 
-	const location = await postWhep(nodeUrl, "/switch/whep", pc);
+	const location = await postWhep(nodeUrl, lite ? "/switch-lite/whep" : "/switch/whep", pc);
 	if (!pc.remoteDescription) throw new Error("whep");
 
 	const close = closeWhep(pc, nodeUrl, location);
@@ -175,29 +177,75 @@ export type StreamStats = {
 	bitrateKbps: number;
 	fps: number;
 	packetsLost: number;
+	rttMs: number | null;
+	jitterBufferMs: number | null;
+	decodeMs: number | null;
+	framesDropped: number | null;
 };
+
+export type StatsSample = {
+	bytes: number;
+	at: number;
+	bufferDelay: number;
+	bufferCount: number;
+	decodeTime: number;
+	framesDecoded: number;
+};
+
+/** Average of a cumulative `total / count` pair over the last sample, in ms. */
+function windowMs(total: number, count: number, prevTotal: number, prevCount: number): number | null {
+	const frames = count - prevCount;
+	if (frames <= 0) return null;
+	return Math.round(((total - prevTotal) / frames) * 1000);
+}
 
 export async function readStreamStats(
 	pc: RTCPeerConnection,
-	prev: { bytes: number; at: number } | null,
-): Promise<{ stats: StreamStats; prev: { bytes: number; at: number } }> {
+	prev: StatsSample | null,
+): Promise<{ stats: StreamStats; prev: StatsSample }> {
 	const report = await pc.getStats();
-	let bytes = 0;
+	let rttMs: number | null = null;
+	let framesDropped: number | null = null;
 	let fps = 0;
 	let packetsLost = 0;
-	let at = performance.now();
+	const sample: StatsSample = {
+		bytes: 0,
+		at: performance.now(),
+		bufferDelay: 0,
+		bufferCount: 0,
+		decodeTime: 0,
+		framesDecoded: 0,
+	};
 
 	for (const item of report.values()) {
-		if (item.type !== "inbound-rtp" || item.kind !== "video") continue;
-		bytes = item.bytesReceived ?? 0;
-		fps = item.framesPerSecond ?? 0;
-		packetsLost = item.packetsLost ?? 0;
-		at = item.timestamp ?? at;
+		if (item.type === "inbound-rtp" && item.kind === "video") {
+			sample.bytes = item.bytesReceived ?? 0;
+			sample.at = item.timestamp ?? sample.at;
+			sample.bufferDelay = item.jitterBufferDelay ?? 0;
+			sample.bufferCount = item.jitterBufferEmittedCount ?? 0;
+			sample.decodeTime = item.totalDecodeTime ?? 0;
+			sample.framesDecoded = item.framesDecoded ?? 0;
+			fps = item.framesPerSecond ?? 0;
+			packetsLost = item.packetsLost ?? 0;
+			framesDropped = item.framesDropped ?? null;
+		} else if (item.type === "candidate-pair" && item.state === "succeeded" && item.nominated) {
+			if (typeof item.currentRoundTripTime === "number") rttMs = Math.round(item.currentRoundTripTime * 1000);
+		}
 	}
 
-	const elapsed = prev ? Math.max(1, at - prev.at) : 1000;
-	const delta = prev ? Math.max(0, bytes - prev.bytes) : 0;
+	const elapsed = prev ? Math.max(1, sample.at - prev.at) : 1000;
+	const delta = prev ? Math.max(0, sample.bytes - prev.bytes) : 0;
 	const bitrateKbps = Math.round((delta * 8) / elapsed);
 
-	return { stats: { bitrateKbps, fps, packetsLost }, prev: { bytes, at } };
+	const jitterBufferMs = prev
+		? windowMs(sample.bufferDelay, sample.bufferCount, prev.bufferDelay, prev.bufferCount)
+		: null;
+	const decodeMs = prev
+		? windowMs(sample.decodeTime, sample.framesDecoded, prev.decodeTime, prev.framesDecoded)
+		: null;
+
+	return {
+		stats: { bitrateKbps, fps, packetsLost, rttMs, jitterBufferMs, decodeMs, framesDropped },
+		prev: sample,
+	};
 }
