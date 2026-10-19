@@ -16,13 +16,16 @@ export type AudioWhepHandle = {
 const ice: RTCConfiguration = { iceServers: [] };
 
 function preferLowJitter(receiver: RTCRtpReceiver): void {
+	// 0 is Chrome's zero-playout-delay path: a frame is shown once it has arrived.
+	// Any positive target is only a floor. Chrome then adds the jitter it measured,
+	// which is the 50-150 ms seen when capture timestamps are uneven.
 	try {
-		// Hint in ms. Chrome clamps; 50 would *add* delay. 0 is invalid (must be > 0).
-		receiver.jitterBufferTarget = 1;
+		receiver.jitterBufferTarget = 0;
 	} catch {
-		const legacy = receiver as RTCRtpReceiver & { playoutDelayHint?: number };
-		if ("playoutDelayHint" in legacy) legacy.playoutDelayHint = 0.001;
+		// A browser that rejects 0 still takes the legacy hint.
 	}
+	const legacy = receiver as RTCRtpReceiver & { playoutDelayHint?: number };
+	if ("playoutDelayHint" in legacy) legacy.playoutDelayHint = 0;
 }
 
 function waitIceGathering(pc: RTCPeerConnection): Promise<void> {
