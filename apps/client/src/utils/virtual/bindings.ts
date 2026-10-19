@@ -16,7 +16,12 @@ export type Bindings = {
 	sticks: Record<StickId, StickBinding>;
 };
 
-const RESERVED_CODES = new Set(["Escape"]);
+// Escape frees the mouse and closes windows, Tab opens and closes the controller window.
+const RESERVED_CODES = new Set(["Escape", "Tab"]);
+
+export function isReservedCode(code: string): boolean {
+	return RESERVED_CODES.has(code);
+}
 
 export function emptyBindings(): Bindings {
 	return {
@@ -226,5 +231,7 @@ export function describeStickDir(binding: StickBinding, dir: "up" | "down" | "le
 
 export const STICK_PRESETS = {
 	wasd: { kind: "keys", up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD" },
+	arrows: { kind: "keys", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight" },
 	mouse: { kind: "mouse" },
+	none: { kind: "none" },
 } as const satisfies Record<string, StickBinding>;

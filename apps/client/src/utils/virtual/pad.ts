@@ -1,34 +1,35 @@
 import { clampAxis, PAD_CENTER, type PadState } from "@s2pipe/shared/types/pad";
 
-import { isTyping } from "../../input.ts";
-import type { Bindings, StickBinding } from "../bindings.ts";
-import { PAD_BUTTON_BITS, PAD_BUTTON_NAMES } from "../targets.ts";
-import type { VirtualBackend } from "./types.ts";
+import { isTyping } from "../input.ts";
+import { type StickBinding, usesMouseAxis } from "./bindings.ts";
+import { activeBindings } from "./presets.ts";
+import type { VirtualPrefs } from "./store.ts";
+import { PAD_BUTTON_BITS, PAD_BUTTON_NAMES } from "./targets.ts";
 
 const DEADZONE = 0.12;
+
+type Axes = { x: number; y: number };
 
 function axisToByte(value: number): number {
 	if (!Number.isFinite(value) || Math.abs(value) < DEADZONE) return PAD_CENTER;
 	return clampAxis((value + 1) * 127.5);
 }
 
-function clampStick(x: number, y: number): { x: number; y: number } {
+function clampStick(x: number, y: number): Axes {
 	const mag = Math.hypot(x, y);
 	if (mag <= 1) return { x, y };
 	return { x: x / mag, y: y / mag };
 }
 
-function keysStick(binding: StickBinding, keys: Set<string>): { x: number; y: number } | null {
-	if (binding.kind !== "keys") return null;
+function stickAxes(binding: StickBinding, keys: Set<string>, mouse: Axes): Axes {
+	if (binding.kind === "mouse") return mouse;
+	if (binding.kind === "none") return { x: 0, y: 0 };
 	const x = (keys.has(binding.right) ? 1 : 0) + (keys.has(binding.left) ? -1 : 0);
 	const y = (keys.has(binding.down) ? 1 : 0) + (keys.has(binding.up) ? -1 : 0);
 	return clampStick(x, y);
 }
 
-export function createKeyboardMouseBackend(): VirtualBackend & {
-	hold(active: boolean): void;
-	requestPointerLock(target: Element): void;
-} {
+export function createVirtualPad() {
 	const keys = new Set<string>();
 	const mouseButtons = new Set<number>();
 	const boundCodes = new Set<string>();
@@ -67,7 +68,9 @@ export function createKeyboardMouseBackend(): VirtualBackend & {
 		if (isTyping(event.target)) return;
 		if (!locked) {
 			const target = event.target;
-			if (target instanceof Element && target.closest("aside, button, a, input, select, label, ul")) return;
+			if (target instanceof Element && target.closest("aside, dialog, button, a, input, select, label, ul")) {
+				return;
+			}
 			const play = document.getElementById("play");
 			if (play && (!(target instanceof Node) || !play.contains(target))) return;
 		}
@@ -130,27 +133,32 @@ export function createKeyboardMouseBackend(): VirtualBackend & {
 			locked = false;
 		},
 
+		// Swallows every key and click, so the next one can be picked as a binding.
 		hold(active: boolean) {
 			held = active;
 			if (active) resetMotion();
 		},
 
-		requestPointerLock(target: Element) {
-			if (typeof target.requestPointerLock !== "function") return;
-			void (target as HTMLElement).requestPointerLock();
+		usesMouseAxis(prefs: VirtualPrefs): boolean {
+			return usesMouseAxis(activeBindings(prefs.presets, prefs.activeId));
 		},
 
-		sample(bindings: Bindings, mouseSensitivity: number): PadState {
+		requestPointerLock(target: Element) {
+			void target.requestPointerLock?.();
+		},
+
+		sample(prefs: VirtualPrefs): PadState {
+			const bindings = activeBindings(prefs.presets, prefs.activeId);
+
 			boundCodes.clear();
 			for (const name of PAD_BUTTON_NAMES) {
 				const input = bindings.buttons[name];
 				if (input?.kind === "key") boundCodes.add(input.code);
 			}
 			for (const stick of [bindings.sticks.left, bindings.sticks.right]) {
-				if (stick.kind === "keys") {
-					for (const code of [stick.up, stick.down, stick.left, stick.right]) {
-						if (code) boundCodes.add(code);
-					}
+				if (stick.kind !== "keys") continue;
+				for (const code of [stick.up, stick.down, stick.left, stick.right]) {
+					if (code) boundCodes.add(code);
 				}
 			}
 
@@ -170,39 +178,20 @@ export function createKeyboardMouseBackend(): VirtualBackend & {
 				if (down) buttons |= PAD_BUTTON_BITS[name];
 			}
 
-			const scale = 0.018 * mouseSensitivity;
+			const scale = 0.018 * prefs.mouseSensitivity;
 			const mouse = clampStick(mx * scale, my * scale);
-			const leftKeys = keysStick(bindings.sticks.left, keys);
-			const rightKeys = keysStick(bindings.sticks.right, keys);
-
-			let lx = 0;
-			let ly = 0;
-			let rx = 0;
-			let ry = 0;
-
-			if (bindings.sticks.left.kind === "mouse") {
-				lx = mouse.x;
-				ly = mouse.y;
-			} else if (leftKeys) {
-				lx = leftKeys.x;
-				ly = leftKeys.y;
-			}
-
-			if (bindings.sticks.right.kind === "mouse") {
-				rx = mouse.x;
-				ry = mouse.y;
-			} else if (rightKeys) {
-				rx = rightKeys.x;
-				ry = rightKeys.y;
-			}
+			const left = stickAxes(bindings.sticks.left, keys, mouse);
+			const right = stickAxes(bindings.sticks.right, keys, mouse);
 
 			return {
 				buttons,
-				lx: axisToByte(lx),
-				ly: axisToByte(ly),
-				rx: axisToByte(rx),
-				ry: axisToByte(ry),
+				lx: axisToByte(left.x),
+				ly: axisToByte(left.y),
+				rx: axisToByte(right.x),
+				ry: axisToByte(right.y),
 			};
 		},
 	};
 }
+
+export type VirtualPad = ReturnType<typeof createVirtualPad>;

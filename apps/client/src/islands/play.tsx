@@ -1,11 +1,12 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
-import { Gamepad2, Maximize, Minimize, Settings, Volume2, VolumeX, X } from "lucide-preact";
+import { Gamepad2, Keyboard, Maximize, Minimize, Settings, Volume2, VolumeX, X } from "lucide-preact";
 
 import type { CaptureStatus, ClientMessage, PicoStatus, ServerMessage } from "@s2pipe/shared/types/node";
 import { neutralPad, PAD_COUNT, type PadState, samePad } from "@s2pipe/shared/types/pad";
 
-import { createInputTracker, type GamepadOption, listGamepads } from "../utils/input.ts";
+import ControllerDialog from "../components/controller-dialog.tsx";
+import { createInputTracker, type GamepadOption, isTyping, listGamepads } from "../utils/input.ts";
 import { useStream } from "../utils/use-stream.ts";
 import { useStreamStats } from "../utils/use-stream-stats.ts";
 import { nodePassword } from "../utils/authorization.ts";
@@ -111,6 +112,9 @@ export default function Play({ nodeUrl }: Props) {
 	const settings = useSignal(false);
 	const virtualPrefs = useSignal<VirtualPrefs>(defaultVirtualPrefs());
 	const virtualLive = useSignal(false);
+	const mapOpen = useSignal(false);
+	// What the virtual pad reads while the mapping window is open, for its live preview.
+	const mapLive = useSignal<PadState>(NEUTRAL);
 	const muted = useSignal(false);
 	const volume = useSignal(1);
 	const fill = useSignal(false);
@@ -341,7 +345,10 @@ export default function Play({ nodeUrl }: Props) {
 
 			if (virtualPrefs.value.enabled) {
 				const virtual = virtualRef.current;
-				const state = virtual?.sample(virtualPrefs.value) ?? NEUTRAL;
+				const sampled = virtual?.sample(virtualPrefs.value) ?? NEUTRAL;
+				if (mapOpen.value && !samePad(sampled, mapLive.value)) mapLive.value = sampled;
+				// Keys pressed to test the mapping must not reach the game.
+				const state = mapOpen.value ? NEUTRAL : sampled;
 				const active = !samePad(state, NEUTRAL);
 				if (active !== virtualLive.value) virtualLive.value = active;
 
@@ -419,11 +426,17 @@ export default function Play({ nodeUrl }: Props) {
 		});
 	}, []);
 
-	// Keyboard shortcut (Escape opens settings)
+	// Keyboard shortcuts (Escape opens settings, Tab opens the virtual controller mapping)
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
+			if (event.code === "Tab" && virtualPrefs.value.enabled && !isTyping(event.target)) {
+				event.preventDefault();
+				if (!event.repeat) toggleMap();
+				return;
+			}
 			if (event.code !== "Escape" || event.repeat) return;
-			if (document.pointerLockElement) return;
+			// The mapping window closes itself on Escape.
+			if (document.pointerLockElement || mapOpen.value) return;
 			settings.value = !settings.value;
 		};
 		globalThis.addEventListener("keydown", onKey);
@@ -501,8 +514,20 @@ export default function Play({ nodeUrl }: Props) {
 			syncSeats(1);
 			return;
 		}
+		mapOpen.value = false;
 		virtualPrefs.value = { ...virtualPrefs.value, enabled: false };
 		syncSeats(0);
+	}
+
+	function toggleMap(): void {
+		if (mapOpen.value) {
+			mapOpen.value = false;
+			return;
+		}
+		// The cursor is hidden while the mouse is captured.
+		if (document.pointerLockElement) document.exitPointerLock();
+		settings.value = false;
+		mapOpen.value = true;
 	}
 
 	function onStageClick(): void {
@@ -546,6 +571,8 @@ export default function Play({ nodeUrl }: Props) {
 				if (virtualPrefs.value.enabled) event.preventDefault();
 			}}
 			onDblClick={(event) => {
+				// Left click is a game button with the virtual controller: a double click must not resize the window.
+				if (virtualPrefs.value.enabled) return;
 				event.preventDefault();
 				toggleFullscreen();
 			}}
@@ -598,6 +625,15 @@ export default function Play({ nodeUrl }: Props) {
 						<dd>{stats.value?.framesDropped ?? "-"}</dd>
 					</div>
 				</dl>
+			)}
+
+			{virtualPrefs.value.enabled && mapOpen.value && (
+				<ControllerDialog
+					prefs={virtualPrefs}
+					live={mapLive}
+					pad={virtualRef}
+					onClose={() => mapOpen.value = false}
+				/>
 			)}
 
 			<div id="hud" onClick={(event) => event.stopPropagation()}>
@@ -690,6 +726,17 @@ export default function Play({ nodeUrl }: Props) {
 							</>
 						)}
 					<div>
+						{virtualPrefs.value.enabled && (
+							<button
+								type="button"
+								className="btn btn-icon"
+								aria-label="Map the virtual controller"
+								title="Map the virtual controller (Tab)"
+								onClick={toggleMap}
+							>
+								<Keyboard size={16} />
+							</button>
+						)}
 						<button
 							type="button"
 							className="btn btn-icon"
@@ -802,7 +849,14 @@ export default function Play({ nodeUrl }: Props) {
 							Keyboard and mouse drive one Pico seat. Physical gamepads on this browser are ignored while
 							this is on. It stays off after a reload.
 						</p>
-						<a className="btn btn-block" href="/controller">Map buttons</a>
+						<button
+							type="button"
+							className="btn btn-block"
+							disabled={!virtualPrefs.value.enabled}
+							onClick={toggleMap}
+						>
+							Map buttons (Tab)
+						</button>
 					</section>
 
 					<section>

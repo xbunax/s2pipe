@@ -113,7 +113,7 @@ s2pipe start --help
 Click a gamepad at the bottom to take a Pico seat (max 8 in total, several per browser). Click again to release it. Esc
 = settings. The HUD stays on until fullscreen.
 
-No gamepad: **Use virtual controller** (keyboard and mouse).
+No gamepad: **Use virtual controller** (keyboard and mouse). Presets: Standard (3D, FPS), Racing (Mario Kart), Keyboard (2D, fighting, retro). Press **Tab** (or the keyboard button in the HUD) to open the mapping window over the stream: switch preset, rebind keys, create profiles. Tab or Esc closes it. System buttons are the same in every preset: Plus on Enter, Minus on `*`, Home on H, Capture on P. Double click does not toggle fullscreen while it is on.
 
 `n/8 playing` is Pico seats taken, not Switch player numbers. Pills: capture, Pico, WebSocket.
 

@@ -1,51 +1,39 @@
 import { type Bindings, cloneBindings, sanitizeBindings } from "./bindings.ts";
-import { BUILTIN_LABELS, type BuiltinId, type ControllerPreset, factoryPresets, isBuiltinId } from "./presets.ts";
+import {
+	BUILTIN_LABELS,
+	type BuiltinId,
+	type ControllerPreset,
+	factoryPresets,
+	isBuiltinId,
+	isRetiredId,
+} from "./presets.ts";
 
-const LAYOUT_VERSION = 2;
+// Bump it to reset the built-in presets of every browser. Profiles are kept.
+const LAYOUT_VERSION = 4;
+const DEFAULT_SENSITIVITY = 0.45;
+const MAX_NAME = 32;
 
-type VirtualLayout = {
+export const VIRTUAL_PREFS_KEY = "s2pipe.virtual";
+export const MAX_PRESETS = 16;
+
+export type VirtualPrefs = {
 	version: number;
+	// Never stored: the virtual controller is off after a reload.
+	enabled: boolean;
 	activeId: string;
 	presets: ControllerPreset[];
 	mouseSensitivity: number;
 };
 
-export type VirtualPrefs = VirtualLayout & {
-	enabled: boolean;
-};
-
-export const VIRTUAL_PREFS_KEY = "s2pipe.virtual";
-export const MAX_PRESETS = 16;
-const MAX_NAME = 32;
-
-const defaults: VirtualLayout = {
-	version: LAYOUT_VERSION,
-	activeId: "standard",
-	presets: factoryPresets(),
-	mouseSensitivity: 0.45,
-};
-
-function storage(): { getItem(key: string): string | null; setItem(key: string, value: string): void } | null {
-	try {
-		const host = globalThis as {
-			localStorage?: { getItem(key: string): string | null; setItem(key: string, value: string): void };
-		};
-		return host.localStorage ?? null;
-	} catch {
-		return null;
-	}
-}
-
 function clampSensitivity(value: unknown): number {
-	const n = typeof value === "number" ? value : Number(value);
-	if (!Number.isFinite(n)) return defaults.mouseSensitivity;
+	const n = Number(value);
+	if (!Number.isFinite(n)) return DEFAULT_SENSITIVITY;
 	return Math.min(2, Math.max(0.05, n));
 }
 
 export function clampPresetName(value: unknown, fallback = "Profil"): string {
 	const name = typeof value === "string" ? value.trim() : "";
-	const next = name || fallback;
-	return next.slice(0, MAX_NAME);
+	return (name || fallback).slice(0, MAX_NAME);
 }
 
 function readPreset(raw: unknown): ControllerPreset | null {
@@ -61,106 +49,55 @@ function readPreset(raw: unknown): ControllerPreset | null {
 	};
 }
 
+// Built-ins always come first, each one edited or not, then the profiles up to the limit.
 function withBuiltins(presets: ControllerPreset[]): ControllerPreset[] {
-	const extras = new Map<string, ControllerPreset>();
-	const edited = new Map<string, ControllerPreset>();
-	for (const preset of presets) {
-		if (isBuiltinId(preset.id)) {
-			edited.set(preset.id, { ...preset, builtin: preset.id, name: BUILTIN_LABELS[preset.id] });
-		} else if (!extras.has(preset.id)) extras.set(preset.id, { ...preset, builtin: null });
-	}
-	const next = factoryPresets().map((preset) => edited.get(preset.id) ?? preset);
-	for (const preset of extras.values()) {
-		if (next.length >= MAX_PRESETS) break;
-		next.push(preset);
-	}
-	return next;
-}
-
-function layoutFrom(raw: unknown): VirtualLayout {
-	const base = {
-		version: LAYOUT_VERSION,
-		activeId: defaults.activeId,
-		presets: factoryPresets(),
-		mouseSensitivity: defaults.mouseSensitivity,
-	};
-	if (!raw || typeof raw !== "object") return base;
-	const parsed = raw as Partial<VirtualLayout> & { presetId?: unknown; custom?: unknown };
-
-	if (Array.isArray(parsed.presets)) {
-		let items = parsed.presets.map(readPreset).filter((preset) => preset !== null);
-		if (parsed.version !== LAYOUT_VERSION) items = items.filter((preset) => !preset.builtin);
-		const presets = withBuiltins(items);
-		const activeId = typeof parsed.activeId === "string" && presets.some((preset) => preset.id === parsed.activeId)
-			? parsed.activeId
-			: "standard";
-		return {
-			version: LAYOUT_VERSION,
-			activeId,
-			presets,
-			mouseSensitivity: clampSensitivity(parsed.mouseSensitivity),
-		};
-	}
-
-	const presets = factoryPresets();
-	let activeId = "standard";
-	if (parsed.presetId === "custom") {
-		const custom = readPreset({
-			id: "custom",
-			name: "Custom",
-			bindings: parsed.custom,
-			builtin: null,
-		});
-		if (custom && presets.length < MAX_PRESETS) {
-			presets.push(custom);
-			activeId = custom.id;
-		}
-	} else if (typeof parsed.presetId === "string" && isBuiltinId(parsed.presetId)) {
-		activeId = parsed.presetId;
-	}
-	return {
-		version: LAYOUT_VERSION,
-		activeId,
-		presets,
-		mouseSensitivity: clampSensitivity(parsed.mouseSensitivity),
-	};
+	const builtins = factoryPresets().map((factory) => presets.find((item) => item.id === factory.id) ?? factory);
+	const profiles = presets.filter((item, i) =>
+		!item.builtin && presets.findIndex((other) => other.id === item.id) === i
+	);
+	return [...builtins, ...profiles].slice(0, MAX_PRESETS);
 }
 
 export function parseStoredPrefs(raw: unknown): VirtualPrefs {
-	return { ...layoutFrom(raw), enabled: false };
+	const source = (raw && typeof raw === "object" ? raw : {}) as Partial<VirtualPrefs>;
+	const stale = source.version !== LAYOUT_VERSION;
+	const items = (Array.isArray(source.presets) ? source.presets : []).flatMap((item) => {
+		const preset = readPreset(item);
+		return preset && !isRetiredId(preset.id) && !(stale && preset.builtin) ? [preset] : [];
+	});
+	const presets = withBuiltins(items);
+	return {
+		version: LAYOUT_VERSION,
+		enabled: false,
+		activeId: presets.find((preset) => preset.id === source.activeId)?.id ?? "standard",
+		presets,
+		mouseSensitivity: clampSensitivity(source.mouseSensitivity),
+	};
+}
+
+export function defaultVirtualPrefs(): VirtualPrefs {
+	return parseStoredPrefs(null);
 }
 
 export function loadVirtualPrefs(): VirtualPrefs {
 	try {
-		const raw = storage()?.getItem(VIRTUAL_PREFS_KEY);
-		if (!raw) return defaultVirtualPrefs();
-		return parseStoredPrefs(JSON.parse(raw));
+		return parseStoredPrefs(JSON.parse(localStorage.getItem(VIRTUAL_PREFS_KEY) ?? "null"));
 	} catch {
 		return defaultVirtualPrefs();
 	}
 }
 
 export function saveVirtualPrefs(prefs: VirtualPrefs): void {
-	const layout = layoutFrom(prefs);
 	try {
-		storage()?.setItem(VIRTUAL_PREFS_KEY, JSON.stringify(layout));
+		localStorage.setItem(VIRTUAL_PREFS_KEY, JSON.stringify(parseStoredPrefs(prefs)));
 	} catch {
-		// ignore quota / private mode
+		// Quota or private mode.
 	}
 }
 
-export function defaultVirtualPrefs(): VirtualPrefs {
-	return {
-		enabled: false,
-		version: defaults.version,
-		activeId: defaults.activeId,
-		presets: factoryPresets(),
-		mouseSensitivity: defaults.mouseSensitivity,
-	};
-}
-
 export function createUserPreset(name: string, bindings: Bindings): ControllerPreset {
-	const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `preset-${Date.now()}`;
+	// randomUUID needs a secure context, and the node may be served over plain http on the LAN.
+	const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `preset-${Date.now()}`;
 	return {
 		id,
 		name: clampPresetName(name),

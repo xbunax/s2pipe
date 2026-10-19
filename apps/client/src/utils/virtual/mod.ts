@@ -4,10 +4,11 @@ export {
 	cloneBindings,
 	describeInput,
 	describeStickDir,
+	isReservedCode,
 	type StickBinding,
 	watchKeyLayout,
 } from "./bindings.ts";
-export { BUILTIN_LABELS, type ControllerPreset, presetBindings } from "./presets.ts";
+export { BUILTIN_HINTS, BUILTIN_LABELS, type ControllerPreset, presetBindings } from "./presets.ts";
 export {
 	clampPresetName,
 	createUserPreset,
@@ -18,7 +19,7 @@ export {
 	VIRTUAL_PREFS_KEY,
 	type VirtualPrefs,
 } from "./store.ts";
-export { createVirtualPad, type VirtualPad } from "./sample.ts";
+export { createVirtualPad, type VirtualPad } from "./pad.ts";
 export {
 	PAD_BUTTON_BITS,
 	PAD_BUTTON_LABELS,

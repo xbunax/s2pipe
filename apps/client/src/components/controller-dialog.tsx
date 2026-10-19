@@ -1,25 +1,24 @@
-import { useSignal } from "@preact/signals";
+import { type ReadonlySignal, type Signal, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
+import { X } from "lucide-preact";
 
-import { neutralPad, type PadState, samePad } from "@s2pipe/shared/types/pad";
+import type { PadState } from "@s2pipe/shared/types/pad";
 
-import ControllerPad from "../components/controller-pad.tsx";
+import ControllerPad from "./controller-pad.tsx";
 import { holdPage } from "../utils/page-session.ts";
 import {
+	BUILTIN_HINTS,
 	BUILTIN_LABELS,
 	type ButtonInput,
 	clampPresetName,
 	cloneBindings,
 	type ControllerPreset,
 	createUserPreset,
-	createVirtualPad,
-	defaultVirtualPrefs,
-	loadVirtualPrefs,
+	isReservedCode,
 	MAX_PRESETS,
 	PAD_BUTTON_LABELS,
 	type PadButtonName,
 	presetBindings,
-	saveVirtualPrefs,
 	STICK_LABELS,
 	type StickBinding,
 	type StickDir,
@@ -30,62 +29,47 @@ import {
 	watchKeyLayout,
 } from "../utils/virtual/mod.ts";
 
+type Props = {
+	prefs: Signal<VirtualPrefs>;
+	live: ReadonlySignal<PadState>;
+	pad: { current: VirtualPad | null };
+	onClose: () => void;
+};
+
 function activePreset(prefs: VirtualPrefs): ControllerPreset {
 	return prefs.presets.find((preset) => preset.id === prefs.activeId) ?? prefs.presets[0];
 }
 
-export default function Controller() {
-	const prefs = useSignal<VirtualPrefs>(defaultVirtualPrefs());
-	const live = useSignal<PadState>(neutralPad());
+export default function ControllerDialog({ prefs, live, pad, onClose }: Props) {
 	const listening = useSignal<PadButtonName | StickListen | null>(null);
 	const draftName = useSignal("");
-	const persist = useRef(false);
 	const dialogRef = useRef<HTMLDialogElement>(null);
-	const padRef = useRef<VirtualPad | null>(null);
+	const createRef = useRef<HTMLDialogElement>(null);
 
 	useEffect(() => {
-		prefs.value = loadVirtualPrefs();
-		persist.current = true;
-		return watchKeyLayout();
-	}, []);
-
-	useEffect(() => {
-		if (!persist.current) return;
-		saveVirtualPrefs(prefs.value);
-	}, [prefs.value]);
-
-	useEffect(() => {
-		const pad = createVirtualPad();
-		padRef.current = pad;
-		pad.attach();
-		let frame = 0;
-		let alive = true;
-		const loop = () => {
-			if (!alive) return;
-			frame = requestAnimationFrame(loop);
-			const state = pad.sample(prefs.value);
-			if (!samePad(state, live.value)) live.value = state;
-		};
-		frame = requestAnimationFrame(loop);
-		return holdPage(() => {
-			alive = false;
-			cancelAnimationFrame(frame);
-			padRef.current = null;
-			pad.detach();
-		});
+		const dialog = dialogRef.current;
+		if (!dialog) return;
+		dialog.showModal();
+		// A focused button would be pressed by the Space key of the virtual pad.
+		dialog.focus();
+		return holdPage(watchKeyLayout());
 	}, []);
 
 	useEffect(() => {
 		const target = listening.value;
 		if (!target) return;
-		padRef.current?.hold(true);
+		pad.current?.hold(true);
 
+		// Stopping propagation keeps Tab and Escape away from the play page shortcuts while a key is being picked.
 		const onKey = (event: KeyboardEvent) => {
 			event.preventDefault();
+			event.stopPropagation();
 			if (event.repeat || event.type === "keyup") return;
 			if (event.code === "Escape") {
 				if (typeof target === "object") unbindStickDir(target.id, target.dir);
 				else unbindButton(target);
+			} else if (isReservedCode(event.code)) {
+				return;
 			} else if (typeof target === "object") {
 				bindStickDir(target.id, target.dir, event.code);
 			} else {
@@ -100,7 +84,7 @@ export default function Controller() {
 
 		const onMouse = (event: MouseEvent) => {
 			const element = event.target instanceof Element ? event.target : null;
-			const control = element?.closest("button, a, select, input, textarea, dialog");
+			const control = element?.closest("button, a, select, input, textarea");
 			const selected = element?.closest(".pad-cell[aria-pressed='true']");
 			if (event.button === 0 && control && !selected) return;
 			event.preventDefault();
@@ -117,7 +101,7 @@ export default function Controller() {
 		globalThis.addEventListener("mousedown", onMouse, { capture: true });
 		globalThis.addEventListener("contextmenu", block, { capture: true });
 		return holdPage(() => {
-			padRef.current?.hold(false);
+			pad.current?.hold(false);
 			globalThis.removeEventListener("keydown", onKey, { capture: true });
 			globalThis.removeEventListener("keyup", onKey, { capture: true });
 			globalThis.removeEventListener("mousedown", onMouse, { capture: true });
@@ -125,15 +109,11 @@ export default function Controller() {
 		});
 	}, [listening.value]);
 
-	function patch(next: VirtualPrefs): void {
-		prefs.value = next;
-	}
-
 	function replaceActive(next: ControllerPreset): void {
-		patch({
+		prefs.value = {
 			...prefs.value,
 			presets: prefs.value.presets.map((preset) => preset.id === next.id ? next : preset),
-		});
+		};
 	}
 
 	function unbindButton(name: PadButtonName): void {
@@ -189,14 +169,8 @@ export default function Controller() {
 
 	function onPreset(id: string): void {
 		listening.value = null;
-		const preset = activePreset(prefs.value);
-		const presets = preset.builtin
-			? prefs.value.presets
-			: prefs.value.presets.map((item) =>
-				item.id === preset.id ? { ...item, name: clampPresetName(item.name) } : item
-			);
-		if (!presets.some((item) => item.id === id)) return;
-		patch({ ...prefs.value, presets, activeId: id });
+		if (!prefs.value.presets.some((item) => item.id === id)) return;
+		prefs.value = { ...prefs.value, activeId: id };
 	}
 
 	function rename(name: string): void {
@@ -227,16 +201,13 @@ export default function Controller() {
 		if (preset.builtin) return;
 		listening.value = null;
 		const presets = prefs.value.presets.filter((item) => item.id !== preset.id);
-		patch({
-			...prefs.value,
-			presets,
-			activeId: presets[0]?.id ?? "standard",
-		});
+		prefs.value = { ...prefs.value, presets, activeId: presets[0]?.id ?? "standard" };
 	}
 
 	function openCreate(): void {
+		listening.value = null;
 		draftName.value = "";
-		dialogRef.current?.showModal();
+		createRef.current?.showModal();
 	}
 
 	function create(event: Event): void {
@@ -244,35 +215,38 @@ export default function Controller() {
 		if (prefs.value.presets.length >= MAX_PRESETS) return;
 		const source = activePreset(prefs.value);
 		const preset = createUserPreset(draftName.value || `${source.name} copy`, source.bindings);
-		listening.value = null;
-		patch({
+		prefs.value = {
 			...prefs.value,
 			activeId: preset.id,
 			presets: [...prefs.value.presets, preset],
-		});
-		dialogRef.current?.close();
+		};
+		createRef.current?.close();
 	}
 
 	const preset = activePreset(prefs.value);
 	const full = prefs.value.presets.length >= MAX_PRESETS;
 	const builtins = prefs.value.presets.filter((item) => item.builtin);
-	const profils = prefs.value.presets.filter((item) => !item.builtin);
+	const profiles = prefs.value.presets.filter((item) => !item.builtin);
 
 	return (
-		<article>
-			<p className="brand">
-				<span>s2</span>pipe
-			</p>
-			<p id="back">
-				<a href="/">Back to play</a>
-			</p>
-			<h1>Virtual controller</h1>
-			<p>
-				Presets keep their names. Profiles are copies you can rename. Click a face, or one stick direction, and
-				press the key you want. The center of a stick is the stick click. Esc clears that bind.
-			</p>
+		<dialog
+			id="controller"
+			ref={dialogRef}
+			tabIndex={-1}
+			onClick={(event) => event.stopPropagation()}
+			onCancel={(event) => {
+				if (listening.value) event.preventDefault();
+			}}
+			onClose={onClose}
+		>
+			<header>
+				<h2>Virtual controller</h2>
+				<button type="button" className="btn btn-icon" aria-label="Close" onClick={onClose}>
+					<X size={16} />
+				</button>
+			</header>
 
-			<div id="tools">
+			<div>
 				<label className="field">
 					<span>Layout</span>
 					<select
@@ -286,15 +260,15 @@ export default function Controller() {
 								</option>
 							))}
 						</optgroup>
-						<optgroup label="Profiles">
-							{profils.length === 0
-								? <option value="" disabled>No profile</option>
-								: profils.map((item) => (
+						{profiles.length > 0 && (
+							<optgroup label="Profiles">
+								{profiles.map((item) => (
 									<option key={item.id} value={item.id}>
 										{item.name}
 									</option>
 								))}
-						</optgroup>
+							</optgroup>
+						)}
 					</select>
 				</label>
 				{!preset.builtin && (
@@ -319,10 +293,10 @@ export default function Controller() {
 						step="0.05"
 						value={prefs.value.mouseSensitivity}
 						onInput={(event) =>
-							patch({
+							prefs.value = {
 								...prefs.value,
 								mouseSensitivity: Number((event.target as HTMLInputElement).value),
-							})}
+							}}
 					/>
 				</label>
 				<div>
@@ -341,15 +315,16 @@ export default function Controller() {
 							</button>
 						)}
 				</div>
+				{preset.builtin && <p>{BUILTIN_HINTS[preset.builtin]}</p>}
 			</div>
 
-			{listening.value && (
-				<p>
-					{typeof listening.value === "object"
+			<p>
+				{listening.value
+					? typeof listening.value === "object"
 						? `Press a key for ${STICK_LABELS[listening.value.id]} ${listening.value.dir}. Esc clears it.`
-						: `Press a key or any mouse button for ${PAD_BUTTON_LABELS[listening.value]}. Esc clears it.`}
-				</p>
-			)}
+						: `Press a key or any mouse button for ${PAD_BUTTON_LABELS[listening.value]}. Esc clears it.`
+					: "Click a face, or one stick direction, then press the key you want. The center of a stick is the stick click. Tab closes this window."}
+			</p>
 
 			<ControllerPad
 				bindings={preset.bindings}
@@ -367,7 +342,7 @@ export default function Controller() {
 				}}
 			/>
 
-			<dialog ref={dialogRef}>
+			<dialog ref={createRef}>
 				<form onSubmit={create}>
 					<header>
 						<h2>New profile</h2>
@@ -383,13 +358,13 @@ export default function Controller() {
 						/>
 					</label>
 					<footer>
-						<button type="button" className="btn" onClick={() => dialogRef.current?.close()}>
+						<button type="button" className="btn" onClick={() => createRef.current?.close()}>
 							Cancel
 						</button>
 						<button type="submit" className="btn btn-primary">Create</button>
 					</footer>
 				</form>
 			</dialog>
-		</article>
+		</dialog>
 	);
 }

@@ -1,13 +1,23 @@
 import { PadButton } from "@s2pipe/shared/types/pad";
 
-import { cloneBindings, describeInput, sanitizeBindings } from "./bindings.ts";
-import { activeBindings, factoryPresets, isBuiltinId, presetBindings } from "./presets.ts";
+import { type ButtonInput, cloneBindings, describeInput, sanitizeBindings } from "./bindings.ts";
+import { activeBindings, BUILTIN_IDS, BUILTIN_LABELS, factoryPresets, isBuiltinId, presetBindings } from "./presets.ts";
 import { createUserPreset, parseStoredPrefs } from "./store.ts";
+import { PAD_BUTTON_NAMES } from "./targets.ts";
 
-Deno.test("sanitizeBindings drops Escape and a second mouse stick", () => {
+function code(input: ButtonInput | undefined): string | null {
+	return input?.kind === "key" ? input.code : null;
+}
+
+function isMouse(input: ButtonInput | undefined, button: number): boolean {
+	return input?.kind === "mouse" && input.button === button;
+}
+
+Deno.test("sanitizeBindings drops Escape, Tab and a second mouse stick", () => {
 	const clean = sanitizeBindings({
 		buttons: {
 			A: { kind: "key", code: "Escape" },
+			Y: { kind: "key", code: "Tab" },
 			B: { kind: "key", code: "Space" },
 			X: { kind: "nope" },
 		},
@@ -17,6 +27,7 @@ Deno.test("sanitizeBindings drops Escape and a second mouse stick", () => {
 		},
 	});
 	if (clean.buttons.A) throw new Error("Escape must not bind");
+	if (clean.buttons.Y) throw new Error("Tab must not bind");
 	if (clean.buttons.B?.kind !== "key" || clean.buttons.B.code !== "Space") throw new Error("Space bind lost");
 	if (clean.buttons.X) throw new Error("invalid bind kept");
 	if (clean.sticks.left.kind !== "mouse") throw new Error("left mouse lost");
@@ -28,18 +39,14 @@ Deno.test("cloneBindings does not alias nested objects", () => {
 	const copy = cloneBindings(source);
 	copy.buttons.A = { kind: "key", code: "KeyZ" };
 	copy.sticks.left = { kind: "none" };
-	if (source.buttons.A?.kind !== "key" || source.buttons.A.code !== "Space") {
-		throw new Error("clone mutated source buttons");
-	}
+	if (code(source.buttons.A) !== "Space") throw new Error("clone mutated source buttons");
 	if (source.sticks.left.kind !== "keys") throw new Error("clone mutated source stick");
 });
 
 Deno.test("activeBindings reads the selected preset", () => {
 	const presets = factoryPresets();
-	const fighter = activeBindings(presets, "fighter");
-	if (fighter.buttons.A?.kind !== "key" || fighter.buttons.A.code !== "KeyL") {
-		throw new Error("fighter A should be L");
-	}
+	const keyboard = activeBindings(presets, "keyboard");
+	if (code(keyboard.buttons.A) !== "KeyL") throw new Error("keyboard A should be L");
 	const extra = createUserPreset("Mine", presetBindings("racing"));
 	const resolved = activeBindings([...presets, extra], extra.id);
 	if (resolved.sticks.left.kind !== "keys") throw new Error("user preset should keep racing steer stick");
@@ -50,7 +57,7 @@ Deno.test("parseStoredPrefs keeps builtin edits and ignores enabled", () => {
 	const standard = presetBindings("standard");
 	standard.buttons.A = { kind: "key", code: "KeyZ" };
 	const parsed = parseStoredPrefs({
-		version: 2,
+		version: 4,
 		enabled: true,
 		activeId: "standard",
 		mouseSensitivity: 1,
@@ -61,32 +68,40 @@ Deno.test("parseStoredPrefs keeps builtin edits and ignores enabled", () => {
 	});
 	if (parsed.enabled) throw new Error("enabled must not persist");
 	if (parsed.activeId !== "standard") throw new Error("active preset lost");
-	if (parsed.presets[0]?.name !== "Standard") throw new Error("builtin name must stay fixed");
-	if (parsed.presets[0]?.bindings.buttons.A?.kind !== "key" || parsed.presets[0].bindings.buttons.A.code !== "KeyZ") {
-		throw new Error("builtin edit lost");
+	if (parsed.presets[0]?.name !== BUILTIN_LABELS.standard) throw new Error("builtin name must stay fixed");
+	if (code(parsed.presets[0]?.bindings.buttons.A) !== "KeyZ") throw new Error("builtin edit lost");
+	for (const id of BUILTIN_IDS) {
+		if (!parsed.presets.some((preset) => preset.id === id)) throw new Error(`missing builtin ${id} not restored`);
 	}
-	if (!parsed.presets.some((preset) => preset.id === "racing")) throw new Error("missing builtin not restored");
 	const user = parsed.presets.find((preset) => preset.id === "nope");
 	if (!user || user.builtin !== null || user.name !== "Profil") throw new Error("user preset sanitize");
 });
 
-Deno.test("parseStoredPrefs migrates the old custom slot", () => {
+Deno.test("parseStoredPrefs refreshes old builtins, drops merged presets, keeps profiles", () => {
+	const old = presetBindings("standard");
+	old.buttons.A = { kind: "key", code: "KeyZ" };
 	const parsed = parseStoredPrefs({
-		enabled: true,
-		presetId: "custom",
-		custom: presetBindings("racing"),
-		mouseSensitivity: 0.2,
+		version: 3,
+		activeId: "mine",
+		presets: [
+			{ id: "standard", name: "Standard", bindings: old, builtin: "standard" },
+			{ id: "fps", name: "FPS", bindings: presetBindings("standard"), builtin: "fps" },
+			{ id: "fighter", name: "Fighter", bindings: presetBindings("standard"), builtin: "fighter" },
+			{ id: "mine", name: "Mine", bindings: presetBindings("keyboard") },
+		],
 	});
-	if (parsed.enabled) throw new Error("old enabled must not come back");
-	if (parsed.activeId !== "custom") throw new Error("custom should stay selected");
-	const custom = parsed.presets.find((preset) => preset.id === "custom");
-	if (!custom || custom.bindings.buttons.ZR?.kind !== "key" || custom.bindings.buttons.ZR.code !== "KeyE") {
-		throw new Error("custom bindings lost");
+	if (code(parsed.presets.find((preset) => preset.id === "standard")?.bindings.buttons.A) !== "Space") {
+		throw new Error("old builtin must refresh");
 	}
-	if (parsed.presets.filter((preset) => preset.builtin).length !== 4) throw new Error("builtins missing");
+	if (parsed.presets.some((preset) => preset.id === "fps" || preset.id === "fighter")) {
+		throw new Error("merged presets must not come back as profiles");
+	}
+	if (parsed.activeId !== "mine") throw new Error("profile lost");
+	const fallback = parseStoredPrefs({ version: 3, activeId: "fps", presets: [] });
+	if (fallback.activeId !== "standard") throw new Error("active merged preset must fall back to standard");
 });
 
-Deno.test("standard and racing presets", () => {
+Deno.test("standard: WASD, mouse aim, ZR left click, ZL right click, B and X/Y under the left hand", () => {
 	const standard = presetBindings("standard");
 	if (
 		standard.sticks.left.kind !== "keys" || standard.sticks.left.up !== "KeyW" ||
@@ -94,37 +109,78 @@ Deno.test("standard and racing presets", () => {
 		standard.sticks.left.right !== "KeyD"
 	) throw new Error("standard left stick is WASD");
 	if (standard.sticks.right.kind !== "mouse") throw new Error("standard right stick is mouse");
-	const stale = parseStoredPrefs({
-		activeId: "standard",
-		presets: [{ id: "standard", name: "Standard", bindings: { buttons: { A: { kind: "key", code: "KeyZ" } } } }],
-	});
-	if (stale.presets[0]?.bindings.buttons.ZL?.kind !== "mouse") throw new Error("old builtin presets must refresh");
-	if (standard.buttons.ZL?.kind !== "mouse" || standard.buttons.ZL.button !== 0) throw new Error("ZL is left click");
-	if (standard.buttons.ZR?.kind !== "mouse" || standard.buttons.ZR.button !== 2) throw new Error("ZR is right click");
-	const racing = presetBindings("racing");
-	if (
-		racing.sticks.left.kind !== "keys" || racing.sticks.left.left !== "KeyA" || racing.sticks.left.right !== "KeyD"
-	) {
-		throw new Error("racing steers on A and D");
+	if (!isMouse(standard.buttons.ZR, 0)) throw new Error("ZR is left click");
+	if (!isMouse(standard.buttons.ZL, 2)) throw new Error("ZL is right click");
+	if (describeInput(standard.buttons.ZR) !== "Left click") throw new Error(describeInput(standard.buttons.ZR));
+	if (code(standard.buttons.A) !== "Space") throw new Error("A on Space");
+	if (code(standard.buttons.B) !== "KeyC") throw new Error("B on C, under the thumb");
+	if (code(standard.buttons.X) !== "KeyR" || code(standard.buttons.Y) !== "KeyF") {
+		throw new Error("X and Y on R and F");
 	}
-	if (racing.sticks.left.up !== "KeyW" || racing.sticks.left.down !== "KeyS") throw new Error("racing gas and brake");
-	if (racing.buttons.R?.kind !== "key" || racing.buttons.R.code !== "ShiftLeft") throw new Error("R drifts");
-	if (describeInput(standard.buttons.ZL) !== "Left click") throw new Error(describeInput(standard.buttons.ZL));
+	if (code(standard.buttons.L) !== "KeyQ" || code(standard.buttons.R) !== "KeyE") {
+		throw new Error("L and R on Q and E");
+	}
+	if (code(standard.buttons.LStick) !== "ShiftLeft") throw new Error("sprint on Shift");
+});
+
+Deno.test("racing: right click drifts, left click uses items, no mouse capture", () => {
+	const racing = presetBindings("racing");
+	if (code(racing.buttons.A) !== "Space") throw new Error("A is the gas on Space");
+	if (code(racing.buttons.B) !== "KeyC") throw new Error("B brakes on C");
+	if (!isMouse(racing.buttons.R, 2)) throw new Error("R drifts on right click");
+	if (!isMouse(racing.buttons.L, 0)) throw new Error("L uses items on left click");
+	if (code(racing.buttons.ZR) !== "ShiftLeft") throw new Error("ZR drifts on Shift without a mouse");
+	if (code(racing.buttons.ZL) !== "KeyQ") throw new Error("ZL uses items on Q without a mouse");
+	if (
+		racing.sticks.left.kind !== "keys" || racing.sticks.left.left !== "KeyA" ||
+		racing.sticks.left.right !== "KeyD" ||
+		racing.sticks.left.up !== "KeyW" || racing.sticks.left.down !== "KeyS"
+	) throw new Error("racing steers on WASD");
+	if (racing.sticks.right.kind !== "none") throw new Error("racing must not capture the mouse");
+	if (code(racing.buttons.Left) !== "ArrowLeft") throw new Error("D-pad steers too");
+});
+
+Deno.test("keyboard: right hand on IJKL like the face buttons, no mouse at all", () => {
+	const keyboard = presetBindings("keyboard");
+	if (
+		code(keyboard.buttons.X) !== "KeyI" || code(keyboard.buttons.Y) !== "KeyJ" ||
+		code(keyboard.buttons.A) !== "KeyL" || code(keyboard.buttons.B) !== "KeyK"
+	) throw new Error("face diamond on IJKL");
+	if (keyboard.sticks.left.kind !== "keys" || keyboard.sticks.right.kind !== "none") throw new Error("sticks");
+	for (const name of PAD_BUTTON_NAMES) {
+		if (keyboard.buttons[name]?.kind === "mouse") throw new Error("keyboard preset binds a mouse button");
+	}
+});
+
+Deno.test("every preset binds all 18 buttons once, avoids reserved keys and shares the system keys", () => {
+	for (const id of BUILTIN_IDS) {
+		const bindings = presetBindings(id);
+		const used: string[] = [];
+		for (const name of PAD_BUTTON_NAMES) {
+			const input = bindings.buttons[name];
+			if (!input) throw new Error(`${id} leaves ${name} unbound`);
+			used.push(input.kind === "key" ? input.code : `mouse${input.button}`);
+		}
+		for (const stick of [bindings.sticks.left, bindings.sticks.right]) {
+			if (stick.kind === "keys") used.push(stick.up, stick.down, stick.left, stick.right);
+		}
+		if (used.some((item) => /^(Control|Alt|Escape|Tab)/.test(item))) {
+			throw new Error(`${id} binds Ctrl, Alt, Escape or Tab`);
+		}
+		if (new Set(used).size !== used.length) throw new Error(`${id} binds one input twice`);
+		if (code(bindings.buttons.Plus) !== "Enter") throw new Error(`${id} Plus`);
+		if (code(bindings.buttons.Minus) !== "Backslash") throw new Error(`${id} Minus`);
+		if (code(bindings.buttons.Home) !== "KeyH") throw new Error(`${id} Home`);
+		if (code(bindings.buttons.Capture) !== "KeyP") throw new Error(`${id} Capture`);
+	}
 });
 
 Deno.test("isBuiltinId", () => {
-	if (!isBuiltinId("standard") || isBuiltinId("custom") || isBuiltinId("nope")) {
+	if (!isBuiltinId("standard") || isBuiltinId("custom") || isBuiltinId("fps")) {
 		throw new Error("preset id guard");
 	}
 });
 
-Deno.test("standard Home/Capture stay on H/G", () => {
-	const standard = presetBindings("standard");
-	if (standard.buttons.Home?.kind !== "key" || standard.buttons.Home.code !== "KeyH") {
-		throw new Error("Home");
-	}
-	if (standard.buttons.Capture?.kind !== "key" || standard.buttons.Capture.code !== "KeyG") {
-		throw new Error("Capture");
-	}
+Deno.test("pad bits never overlap", () => {
 	if ((PadButton.A & PadButton.B) !== 0) throw new Error("bits overlap");
 });
