@@ -1,17 +1,45 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
-import { Gamepad2, Keyboard, Maximize, Minimize, Settings, Volume2, VolumeX, X } from "lucide-preact";
+import {
+	EyeOff,
+	Gamepad2,
+	Keyboard,
+	Maximize,
+	Minimize,
+	Move,
+	Settings,
+	Smartphone,
+	Volume2,
+	VolumeX,
+	X,
+} from "lucide-preact";
 
 import type { CaptureStatus, ClientMessage, PicoStatus, ServerMessage } from "@s2pipe/shared/types/node";
 import { neutralPad, PAD_COUNT, type PadState, samePad } from "@s2pipe/shared/types/pad";
 
 import ControllerDialog from "../components/controller-dialog.tsx";
+import GamepadMappingDialog from "../components/gamepad-mapping-dialog.tsx";
+import TouchController from "../components/touch-controller.tsx";
+import {
+	defaultGamepadMapping,
+	type GamepadMapping,
+	loadGamepadMapping,
+	saveGamepadMapping,
+} from "../utils/gamepad.ts";
 import { createInputTracker, type GamepadOption, isTyping, listGamepads } from "../utils/input.ts";
 import { useStream } from "../utils/use-stream.ts";
 import { useStreamStats } from "../utils/use-stream-stats.ts";
 import { nodePassword } from "../utils/authorization.ts";
 import { holdPage } from "../utils/page-session.ts";
 import { loadPlayPrefs, type Quality, savePlayPrefs } from "../utils/prefs.ts";
+import {
+	createTouchState,
+	defaultTouchPrefs,
+	loadTouchPrefs,
+	resetTouchPrefsLayouts,
+	saveTouchPrefs,
+	type TouchPrefs,
+} from "../utils/touch.ts";
 import {
 	createVirtualPad,
 	defaultVirtualPrefs,
@@ -38,6 +66,22 @@ function wsUrl(nodeUrl: string): string {
 	return url.href;
 }
 
+// When the page itself was opened through an IPv6 literal, reach the node on
+// the same host over IPv6. IPv4 page access keeps using the configured URL.
+function browserNodeUrl(configured: string): string {
+	if (typeof location === "undefined") return configured;
+	let host = location.hostname;
+	if (!host.includes(":")) return configured;
+	if (!host.startsWith("[")) host = `[${host}]`;
+	try {
+		const url = new URL(configured);
+		const port = url.port || (url.protocol === "https:" ? "443" : "80");
+		return `${url.protocol}//${host}:${port}`;
+	} catch {
+		return configured;
+	}
+}
+
 function send(ws: WebSocket | null, message: ClientMessage): void {
 	if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
 }
@@ -46,7 +90,18 @@ function picoTitle(pico: PicoStatus | null): string | undefined {
 	if (!pico) return undefined;
 	if (pico.error) return pico.error;
 	const parts: string[] = [];
-	if (pico.path) parts.push(pico.path);
+	if (pico.transport === "wifi") {
+		parts.push(`${pico.device ?? "Pico 2 W"}${pico.ip ? ` @ ${pico.ip}` : ""}`);
+		if (pico.latencyMs !== null) parts.push(`${pico.latencyMs} ms RTT`);
+		if (pico.rssi !== null) parts.push(`${pico.rssi} dBm`);
+		if (pico.stats) {
+			parts.push(
+				`rx ${pico.stats.rx}, dup ${pico.stats.dup}, old ${pico.stats.old}, auth ${pico.stats.auth}`,
+			);
+		}
+	} else if (pico.path) {
+		parts.push(pico.path);
+	}
 	if (pico.connected && !pico.wake) parts.push("Sleep wake: set SWITCH_BT_MAC and CONTROLLER_BT_MAC");
 	return parts.length ? parts.join("\n") : undefined;
 }
@@ -54,6 +109,17 @@ function picoTitle(pico: PicoStatus | null): string | undefined {
 function padLabel(id: string): string {
 	const name = id.split("(")[0]?.trim();
 	return name || id;
+}
+
+function padKey(pad: GamepadOption): string {
+	return `${pad.index}:${pad.id}`;
+}
+
+function isIosLike(): boolean {
+	if (typeof navigator === "undefined") return false;
+	const ua = navigator.userAgent;
+	// iPadOS 13+ can identify itself as a Mac, so check touch points as well.
+	return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
 function formatMs(value: number | null | undefined): string {
@@ -68,6 +134,27 @@ function sameIds(a: number[], b: number[]): boolean {
 
 function selectedPads(pads: GamepadOption[], chosen: number[]): GamepadOption[] {
 	return pads.filter((pad) => chosen.includes(pad.index));
+}
+
+// Safari can hand the same controller back with a different gamepad index.
+// Keep its seat by matching the stable id before falling back to the index.
+function remapChosenIndices(
+	chosen: number[],
+	before: GamepadOption[],
+	next: GamepadOption[],
+): number[] {
+	const out: number[] = [];
+	for (const index of chosen) {
+		if (next.some((pad) => pad.index === index)) {
+			if (!out.includes(index)) out.push(index);
+			continue;
+		}
+		const old = before.find((pad) => pad.index === index);
+		if (!old) continue;
+		const moved = next.find((pad) => pad.id === old.id);
+		if (moved && !out.includes(moved.index)) out.push(moved.index);
+	}
+	return out;
 }
 
 function streamBanner(
@@ -91,14 +178,21 @@ function streamBanner(
 }
 
 export default function Play({ nodeUrl }: Props) {
+	const activeNodeUrl = browserNodeUrl(nodeUrl);
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const stageRef = useRef<HTMLElement>(null);
 	const wsRef = useRef<WebSocket | null>(null);
 	const inputRef = useRef<ReturnType<typeof createInputTracker> | null>(null);
 	const virtualRef = useRef<VirtualPad | null>(null);
+	const touchStateRef = useRef<ReturnType<typeof createTouchState> | null>(null);
+	if (!touchStateRef.current) touchStateRef.current = createTouchState();
+	const touchState = touchStateRef.current;
 	const persistVirtual = useRef(false);
+	const persistGamepad = useRef(false);
+	const persistTouch = useRef(false);
 	const toastSeq = useRef(0);
 	const pendingPlays = useRef(0);
+	const playPendingSince = useRef(0);
 	const persistPrefs = useRef(false);
 
 	const connected = useSignal(false);
@@ -110,9 +204,14 @@ export default function Play({ nodeUrl }: Props) {
 	const occupied = useSignal<number[]>([]);
 	const livePads = useSignal<number[]>([]);
 	const settings = useSignal(false);
+	const uiHidden = useSignal(false);
 	const virtualPrefs = useSignal<VirtualPrefs>(defaultVirtualPrefs());
-	const virtualLive = useSignal(false);
+	const touchPrefs = useSignal<TouchPrefs>(defaultTouchPrefs());
+	const touchEditing = useSignal(false);
+	const localLive = useSignal(false);
 	const mapOpen = useSignal(false);
+	const gamepadMapOpen = useSignal(false);
+	const gamepadMapping = useSignal<GamepadMapping>(defaultGamepadMapping());
 	// What the virtual pad reads while the mapping window is open, for its live preview.
 	const mapLive = useSignal<PadState>(NEUTRAL);
 	const muted = useSignal(false);
@@ -136,6 +235,8 @@ export default function Play({ nodeUrl }: Props) {
 		quality.value = prefs.quality;
 		lite.value = prefs.quality === "lite";
 		virtualPrefs.value = loadVirtualPrefs();
+		touchPrefs.value = loadTouchPrefs();
+		gamepadMapping.value = loadGamepadMapping();
 		prefsLoaded.value = true;
 	}, []);
 
@@ -162,6 +263,43 @@ export default function Play({ nodeUrl }: Props) {
 	}, [virtualPrefs.value]);
 
 	useEffect(() => {
+		if (!persistGamepad.current) {
+			persistGamepad.current = true;
+			return;
+		}
+		saveGamepadMapping(gamepadMapping.value);
+	}, [gamepadMapping.value]);
+
+	useEffect(() => {
+		if (!persistTouch.current) {
+			persistTouch.current = true;
+			return;
+		}
+		saveTouchPrefs(touchPrefs.value);
+	}, [touchPrefs.value]);
+
+	useEffect(() => {
+		if (!touchPrefs.value.enabled) {
+			touchEditing.value = false;
+			touchState.clear();
+		}
+	}, [touchPrefs.value.enabled]);
+
+	useEffect(() => {
+		if (touchEditing.value) {
+			touchState.clear();
+			localLive.value = false;
+		}
+	}, [touchEditing.value]);
+
+	useEffect(() => {
+		if (settings.value && touchPrefs.value.enabled) {
+			touchState.clear();
+			localLive.value = false;
+		}
+	}, [settings.value, touchPrefs.value.enabled]);
+
+	useEffect(() => {
 		const onStorage = (event: StorageEvent) => {
 			if (event.key !== VIRTUAL_PREFS_KEY) return;
 			const next = loadVirtualPrefs();
@@ -172,10 +310,39 @@ export default function Play({ nodeUrl }: Props) {
 	}, []);
 
 	useEffect(() => {
-		if (!virtualPrefs.value.enabled || !connected.value) return;
-		if (seats.value.length > 0) return;
+		if (!virtualPrefs.value.enabled && !touchPrefs.value.enabled) return;
+		if (!connected.value || seats.value.length > 0 || pendingPlays.current > 0) return;
 		syncSeats(1);
-	}, [virtualPrefs.value.enabled, connected.value]);
+	}, [virtualPrefs.value.enabled, touchPrefs.value.enabled, connected.value]);
+
+	// If a physical seat was lost while the page was suspended, take it again.
+	useEffect(() => {
+		if (!connected.value || chosen.value.length === 0) return;
+		if (seats.value.length >= chosen.value.length || pendingPlays.current > 0) return;
+		syncSeats(chosen.value.length);
+	}, [connected.value, seats.value.length, chosen.value.length]);
+
+	// iOS may suspend the page in native fullscreen or when switching apps.
+	// Re-assert the seat on return. If the old socket is dead, its play response
+	// never arrives and the five-second play timeout reconnects it.
+	useEffect(() => {
+		const resume = () => {
+			if (document.visibilityState === "hidden" || pendingPlays.current > 0) return;
+			const count = virtualPrefs.value.enabled || touchPrefs.value.enabled ? 1 : chosen.value.length;
+			if (count > 0) syncSeats(count);
+		};
+		const onVisibility = () => {
+			if (document.visibilityState === "visible") resume();
+		};
+		const video = videoRef.current;
+		const onFullscreenEnd = () => resume();
+		document.addEventListener("visibilitychange", onVisibility);
+		video?.addEventListener("webkitendfullscreen", onFullscreenEnd);
+		return holdPage(() => {
+			document.removeEventListener("visibilitychange", onVisibility);
+			video?.removeEventListener("webkitendfullscreen", onFullscreenEnd);
+		});
+	}, []);
 
 	function toast(text: string): void {
 		const id = ++toastSeq.current;
@@ -186,7 +353,7 @@ export default function Play({ nodeUrl }: Props) {
 	}
 
 	const { whepRef, audioRef } = useStream({
-		nodeUrl,
+		nodeUrl: activeNodeUrl,
 		video: videoRef,
 		lite: lite.value,
 		enabled: prefsLoaded.value,
@@ -219,31 +386,37 @@ export default function Play({ nodeUrl }: Props) {
 	useEffect(() => {
 		let socket: WebSocket | null = null;
 		let retryTimer: ReturnType<typeof setTimeout> | undefined;
+		let lastMessageAt = Date.now();
 		let isClosed = false;
 
 		function connectWs() {
 			if (isClosed) return;
-			socket = new WebSocket(wsUrl(nodeUrl));
+			socket = new WebSocket(wsUrl(activeNodeUrl));
 			wsRef.current = socket;
 
 			socket.addEventListener("open", () => {
 				connected.value = true;
-				const count = virtualPrefs.value.enabled ? 1 : chosen.value.length;
+				lastMessageAt = Date.now();
+				const single = virtualPrefs.value.enabled || touchPrefs.value.enabled;
+				const count = single ? 1 : chosen.value.length;
 				if (!count) return;
 				pendingPlays.current += 1;
+				playPendingSince.current = Date.now();
 				send(socket, { op: "play", data: { count } });
 			});
 
 			socket.addEventListener("message", (event) => {
+				lastMessageAt = Date.now();
 				if (typeof event.data !== "string") return;
 				try {
 					const msg = JSON.parse(event.data) as ServerMessage;
 					if (msg.op === "play") {
 						pendingPlays.current = Math.max(0, pendingPlays.current - 1);
+						playPendingSince.current = pendingPlays.current === 0 ? 0 : Date.now();
 						const granted = msg.data.seats;
 						seats.value = granted;
 						if (pendingPlays.current > 0) return;
-						if (virtualPrefs.value.enabled) {
+						if (virtualPrefs.value.enabled || touchPrefs.value.enabled) {
 							if (granted.length >= 1) return;
 							toast("All remote pads are taken.");
 							return;
@@ -268,6 +441,7 @@ export default function Play({ nodeUrl }: Props) {
 			socket.addEventListener("close", () => {
 				wsRef.current = null;
 				pendingPlays.current = 0;
+				playPendingSince.current = 0;
 				seats.value = [];
 				connected.value = false;
 				if (!isClosed) {
@@ -276,51 +450,133 @@ export default function Play({ nodeUrl }: Props) {
 			});
 		}
 
+		const staleTimer = globalThis.setInterval(() => {
+			if (!socket || socket.readyState !== WebSocket.OPEN) return;
+			// A play request that never receives its seat response leaves the
+			// HUD without P1 and silently blocks later seat claims.
+			if (
+				pendingPlays.current > 0 && playPendingSince.current > 0 &&
+				Date.now() - playPendingSince.current > 5000
+			) {
+				socket.close(4000, "play timeout");
+				return;
+			}
+			// The node sends a status/ping at least every 30 seconds. A quiet
+			// socket after an iOS suspension is usually dead even if it still
+			// reports OPEN.
+			if (Date.now() - lastMessageAt > 45_000) socket.close(4000, "stale");
+		}, 2_000);
+
 		connectWs();
 
 		return holdPage(() => {
 			isClosed = true;
 			clearTimeout(retryTimer);
+			clearInterval(staleTimer);
 			socket?.close();
 			wsRef.current = null;
 			if (document.pointerLockElement) document.exitPointerLock();
 			if (document.fullscreenElement) void document.exitFullscreen();
 		});
-	}, [nodeUrl]);
+	}, [activeNodeUrl]);
 
 	// Gamepads
 	useEffect(() => {
 		const tracker = createInputTracker();
 		inputRef.current = tracker;
 		tracker.attach();
+		const knownIds = new Set<string>();
 
 		const updatePads = () => {
+			const before = pads.value;
 			const next = listGamepads();
+			const previous = new Set(knownIds);
+			knownIds.clear();
+			for (const pad of next) knownIds.add(padKey(pad));
 			pads.value = next;
-			if (virtualPrefs.value.enabled) return;
-			const still = chosen.value.filter((index) => next.some((pad) => pad.index === index));
+
+			if (virtualPrefs.value.enabled || touchPrefs.value.enabled) {
+				if (next.length > before.length) {
+					toast(
+						touchPrefs.value.enabled
+							? "Controller detected. Turn off Touch controller to use it."
+							: "Controller detected. Turn off Virtual controller to use it.",
+					);
+				}
+				return;
+			}
+
+			const still = remapChosenIndices(chosen.value, before, next);
 			const lost = still.length !== chosen.value.length;
 			chosen.value = still;
 			if (lost) syncSeats(still.length);
+
+			// A Backbone/controller is plug-and-play on iPhone. Claim one seat for
+			// a pad that just appeared, not one the user deliberately released.
+			if (isIosLike() && chosen.value.length === 0) {
+				const fresh = next.find((pad) => !previous.has(padKey(pad)));
+				if (fresh) {
+					if (occupied.value.length >= PAD_COUNT) {
+						toast("All remote pads are taken.");
+						return;
+					}
+					chosen.value = [fresh.index];
+					syncSeats(1);
+				}
+			}
+			if (lost && chosen.value.length === 0 && next.length > 0) {
+				toast("Controller seat released. Tap the controller to take a seat again.");
+			}
 		};
 
 		updatePads();
 		globalThis.addEventListener("gamepadconnected", updatePads);
 		globalThis.addEventListener("gamepaddisconnected", updatePads);
+		const watchdog = globalThis.setInterval(updatePads, 2000);
+		const onVisible = () => {
+			if (document.visibilityState === "visible") updatePads();
+		};
+		const video = videoRef.current;
+		const onFullscreenEnd = () => updatePads();
+		document.addEventListener("visibilitychange", onVisible);
+		video?.addEventListener("webkitendfullscreen", onFullscreenEnd);
 
 		return holdPage(() => {
 			tracker.detach();
 			inputRef.current = null;
+			globalThis.clearInterval(watchdog);
 			globalThis.removeEventListener("gamepadconnected", updatePads);
 			globalThis.removeEventListener("gamepaddisconnected", updatePads);
+			document.removeEventListener("visibilitychange", onVisible);
+			video?.removeEventListener("webkitendfullscreen", onFullscreenEnd);
 		});
+	}, []);
+
+	// iPhone native fullscreen hides the page and stops the gamepad loop. If a
+	// controller arrives while it is open, return to the page instead of
+	// leaving the user with a stream that ignores the controller.
+	useEffect(() => {
+		const onGamepad = () => {
+			// deno-lint-ignore no-explicit-any
+			const video = videoRef.current as any;
+			if (video?.webkitDisplayingFullscreen && typeof video.webkitExitFullscreen === "function") {
+				try {
+					video.webkitExitFullscreen();
+					toast("Controller connected. Native fullscreen pauses web controls, so it was closed.");
+				} catch {
+					// The system player refused to close; the user can tap Done.
+				}
+			}
+		};
+		globalThis.addEventListener("gamepadconnected", onGamepad);
+		return holdPage(() => globalThis.removeEventListener("gamepadconnected", onGamepad));
 	}, []);
 
 	useEffect(() => {
 		if (!virtualPrefs.value.enabled) {
 			virtualRef.current?.detach();
 			virtualRef.current = null;
-			virtualLive.value = false;
+			localLive.value = false;
 			return;
 		}
 		const pad = createVirtualPad();
@@ -335,22 +591,28 @@ export default function Play({ nodeUrl }: Props) {
 	// Gamepad input send loop
 	useEffect(() => {
 		let frame = 0;
+		let epoch = 0;
 		const lastBySeat = new Map<number, PadState>();
 		let lastAssignedKey = "";
 
 		let alive = true;
-		const loop = () => {
-			if (!alive) return;
-			frame = requestAnimationFrame(loop);
+		const loop = (token: number) => {
+			if (!alive || token !== epoch) return;
+			frame = requestAnimationFrame(() => loop(token));
 
-			if (virtualPrefs.value.enabled) {
-				const virtual = virtualRef.current;
-				const sampled = virtual?.sample(virtualPrefs.value) ?? NEUTRAL;
-				if (mapOpen.value && !samePad(sampled, mapLive.value)) mapLive.value = sampled;
-				// Keys pressed to test the mapping must not reach the game.
-				const state = mapOpen.value ? NEUTRAL : sampled;
-				const active = !samePad(state, NEUTRAL);
-				if (active !== virtualLive.value) virtualLive.value = active;
+			if (virtualPrefs.value.enabled || touchPrefs.value.enabled) {
+				const sampled = virtualPrefs.value.enabled
+					? virtualRef.current?.sample(virtualPrefs.value) ?? NEUTRAL
+					: touchState.sample();
+				if (virtualPrefs.value.enabled && mapOpen.value && !samePad(sampled, mapLive.value)) {
+					mapLive.value = sampled;
+				}
+				// Input used to test a mapping or move touch controls must not reach the game.
+				const suppressed = mapOpen.value || gamepadMapOpen.value ||
+					(touchPrefs.value.enabled && (touchEditing.value || settings.value));
+				const state = suppressed ? NEUTRAL : sampled;
+				const active = !suppressed && !samePad(state, NEUTRAL);
+				if (active !== localLive.value) localLive.value = active;
 
 				const ws = wsRef.current;
 				const assigned = seats.value;
@@ -380,9 +642,9 @@ export default function Play({ nodeUrl }: Props) {
 			const sampled = new Map<number, PadState>();
 			const active: number[] = [];
 			for (const pad of pads.value) {
-				const state = tracker.sample(pad.index, false);
+				const state = tracker.sample(pad.index, false, gamepadMapping.value);
 				sampled.set(pad.index, state);
-				if (!samePad(state, NEUTRAL)) active.push(pad.index);
+				if (!gamepadMapOpen.value && !samePad(state, NEUTRAL)) active.push(pad.index);
 			}
 			if (!sameIds(active, livePads.value)) livePads.value = active;
 
@@ -407,11 +669,12 @@ export default function Play({ nodeUrl }: Props) {
 			for (let i = 0; i < assigned.length; i++) {
 				const seat = assigned[i]!;
 				const pad = selected[i];
-				const state = i === 0
-					? tracker.sample(pad ? pad.index : null, true)
+				const sampledState = i === 0
+					? tracker.sample(pad ? pad.index : null, true, gamepadMapping.value)
 					: pad
 					? sampled.get(pad.index) ?? NEUTRAL
 					: NEUTRAL;
+				const state = gamepadMapOpen.value ? NEUTRAL : sampledState;
 				const previous = lastBySeat.get(seat);
 				if (previous && samePad(previous, state)) continue;
 				lastBySeat.set(seat, state);
@@ -419,24 +682,53 @@ export default function Play({ nodeUrl }: Props) {
 			}
 		};
 
-		frame = requestAnimationFrame(loop);
+		const restart = () => {
+			if (!alive) return;
+			epoch++;
+			const token = epoch;
+			cancelAnimationFrame(frame);
+			frame = requestAnimationFrame(() => loop(token));
+		};
+		const onVisible = () => {
+			if (document.visibilityState === "visible") restart();
+		};
+		const video = videoRef.current;
+		const onFullscreenEnd = () => restart();
+		document.addEventListener("visibilitychange", onVisible);
+		video?.addEventListener("webkitendfullscreen", onFullscreenEnd);
+
+		frame = requestAnimationFrame(() => loop(epoch));
 		return holdPage(() => {
 			alive = false;
 			cancelAnimationFrame(frame);
+			document.removeEventListener("visibilitychange", onVisible);
+			video?.removeEventListener("webkitendfullscreen", onFullscreenEnd);
 		});
 	}, []);
 
 	// Keyboard shortcuts (Escape opens settings, Tab opens the virtual controller mapping)
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
+			if (uiHidden.value) {
+				if (event.code === "Escape" && !event.repeat) {
+					event.preventDefault();
+					uiHidden.value = false;
+				}
+				return;
+			}
 			if (event.code === "Tab" && virtualPrefs.value.enabled && !isTyping(event.target)) {
 				event.preventDefault();
 				if (!event.repeat) toggleMap();
 				return;
 			}
 			if (event.code !== "Escape" || event.repeat) return;
-			// The mapping window closes itself on Escape.
-			if (document.pointerLockElement || mapOpen.value) return;
+			if (touchEditing.value) {
+				event.preventDefault();
+				touchEditing.value = false;
+				return;
+			}
+			// The mapping windows close themselves on Escape.
+			if (document.pointerLockElement || mapOpen.value || gamepadMapOpen.value) return;
 			settings.value = !settings.value;
 		};
 		globalThis.addEventListener("keydown", onKey);
@@ -483,16 +775,18 @@ export default function Play({ nodeUrl }: Props) {
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
 		if (count > 0) {
 			pendingPlays.current += 1;
+			playPendingSince.current = Date.now();
 			send(ws, { op: "play", data: { count } });
 			return;
 		}
 		pendingPlays.current = 0;
+		playPendingSince.current = 0;
 		seats.value = [];
 		send(ws, { op: "watch" });
 	}
 
 	function toggleSeat(index: number): void {
-		if (virtualPrefs.value.enabled) return;
+		if (virtualPrefs.value.enabled || touchPrefs.value.enabled) return;
 		const claimed = chosen.value.includes(index);
 		if (!claimed && occupied.value.length >= PAD_COUNT) return;
 		chosen.value = claimed ? chosen.value.filter((item) => item !== index) : [...chosen.value, index];
@@ -509,6 +803,12 @@ export default function Play({ nodeUrl }: Props) {
 				toast("All remote pads are taken.");
 				return;
 			}
+			gamepadMapOpen.value = false;
+			touchEditing.value = false;
+			touchState.clear();
+			if (touchPrefs.value.enabled) {
+				touchPrefs.value = { ...touchPrefs.value, enabled: false };
+			}
 			chosen.value = [];
 			virtualPrefs.value = { ...virtualPrefs.value, enabled: true };
 			syncSeats(1);
@@ -519,6 +819,56 @@ export default function Play({ nodeUrl }: Props) {
 		syncSeats(0);
 	}
 
+	function setTouchEnabled(enabled: boolean): void {
+		if (enabled === touchPrefs.value.enabled) {
+			if (enabled) syncSeats(1);
+			return;
+		}
+		if (enabled) {
+			if (occupied.value.length >= PAD_COUNT && seats.value.length === 0) {
+				toast("All remote pads are taken.");
+				return;
+			}
+			mapOpen.value = false;
+			gamepadMapOpen.value = false;
+			touchEditing.value = false;
+			touchState.clear();
+			if (virtualPrefs.value.enabled) {
+				virtualPrefs.value = { ...virtualPrefs.value, enabled: false };
+			}
+			chosen.value = [];
+			touchPrefs.value = { ...touchPrefs.value, enabled: true };
+			syncSeats(1);
+			return;
+		}
+		touchEditing.value = false;
+		touchState.clear();
+		touchPrefs.value = { ...touchPrefs.value, enabled: false };
+		if (!virtualPrefs.value.enabled) syncSeats(0);
+	}
+
+	function editTouchLayout(): void {
+		if (!touchPrefs.value.enabled) return;
+		settings.value = false;
+		touchState.clear();
+		touchEditing.value = true;
+	}
+
+	function resetTouchLayouts(): void {
+		touchPrefs.value = resetTouchPrefsLayouts(touchPrefs.value);
+	}
+
+	function hideAllUi(): void {
+		if (document.pointerLockElement) document.exitPointerLock();
+		settings.value = false;
+		mapOpen.value = false;
+		gamepadMapOpen.value = false;
+		touchEditing.value = false;
+		touchState.clear();
+		localLive.value = false;
+		uiHidden.value = true;
+	}
+
 	function toggleMap(): void {
 		if (mapOpen.value) {
 			mapOpen.value = false;
@@ -527,12 +877,17 @@ export default function Play({ nodeUrl }: Props) {
 		// The cursor is hidden while the mouse is captured.
 		if (document.pointerLockElement) document.exitPointerLock();
 		settings.value = false;
+		gamepadMapOpen.value = false;
 		mapOpen.value = true;
 	}
 
 	function onStageClick(): void {
 		void videoRef.current?.play();
 		void audioRef.current?.audio.play();
+		if (uiHidden.value) {
+			uiHidden.value = false;
+			return;
+		}
 		if (settings.value) return;
 		const virtual = virtualRef.current;
 		if (!virtual || !virtualPrefs.value.enabled) return;
@@ -545,6 +900,17 @@ export default function Play({ nodeUrl }: Props) {
 		// deno-lint-ignore no-explicit-any
 		const video = videoRef.current as any;
 		if (video?.webkitEnterFullscreen && !document.fullscreenEnabled) {
+			// Native video fullscreen hands the page to the system player: the HUD
+			// and touch overlay disappear and the page's input loop is suspended.
+			if (
+				virtualPrefs.value.enabled || touchPrefs.value.enabled || pads.value.length > 0 ||
+				seats.value.length > 0
+			) {
+				toast(
+					"Native video fullscreen pauses web controller input. Use Add to Home Screen for controller play.",
+				);
+				return;
+			}
 			video.webkitEnterFullscreen();
 			return;
 		}
@@ -555,9 +921,10 @@ export default function Play({ nodeUrl }: Props) {
 		}
 	}
 
-	const hideHud = fullscreen.value;
+	const hideHud = fullscreen.value && !touchPrefs.value.enabled;
 	const banner = streamBanner(connected.value, capture.value, live.value);
 	const selected = selectedPads(pads.value, chosen.value);
+	const mappingPad = selected[0] ?? pads.value[0] ?? null;
 	const seatByIndex = new Map(selected.map((pad, i) => [pad.index, seats.value[i]] as const));
 
 	return (
@@ -566,13 +933,21 @@ export default function Play({ nodeUrl }: Props) {
 			ref={stageRef}
 			data-fill={fill.value ? "true" : undefined}
 			data-idle={hideHud ? "true" : undefined}
+			data-ui-hidden={uiHidden.value ? "true" : undefined}
+			data-touch={touchPrefs.value.enabled ? "true" : undefined}
+			data-touch-edit={touchEditing.value ? "true" : undefined}
 			onClick={onStageClick}
 			onContextMenu={(event) => {
-				if (virtualPrefs.value.enabled) event.preventDefault();
+				if (virtualPrefs.value.enabled || touchPrefs.value.enabled) event.preventDefault();
 			}}
 			onDblClick={(event) => {
-				// Left click is a game button with the virtual controller: a double click must not resize the window.
-				if (virtualPrefs.value.enabled) return;
+				if (uiHidden.value) {
+					event.preventDefault();
+					uiHidden.value = false;
+					return;
+				}
+				// Left click is a game button with a local controller: a double click must not resize the window.
+				if (virtualPrefs.value.enabled || touchPrefs.value.enabled) return;
 				event.preventDefault();
 				toggleFullscreen();
 			}}
@@ -636,6 +1011,15 @@ export default function Play({ nodeUrl }: Props) {
 				/>
 			)}
 
+			{!virtualPrefs.value.enabled && !touchPrefs.value.enabled && gamepadMapOpen.value && (
+				<GamepadMappingDialog
+					mapping={gamepadMapping}
+					gamepadIndex={mappingPad?.index ?? null}
+					gamepadName={mappingPad ? padLabel(mappingPad.id) : null}
+					onClose={() => gamepadMapOpen.value = false}
+				/>
+			)}
+
 			<div id="hud" onClick={(event) => event.stopPropagation()}>
 				<div>
 					<span className="brand">
@@ -657,7 +1041,8 @@ export default function Play({ nodeUrl }: Props) {
 							data-ok={pico.value?.connected ? "true" : "false"}
 							title={picoTitle(pico.value)}
 						>
-							Pico {pico.value?.connected ? "ready" : "off"}
+							Pico {pico.value?.transport === "wifi" ? "Wi-Fi" : ""}{" "}
+							{pico.value?.connected ? "ready" : "off"}
 						</span>
 						<span className="pill" data-ok={connected.value ? "true" : "false"}>
 							{connected.value ? "Connected" : "Connecting"}
@@ -672,7 +1057,7 @@ export default function Play({ nodeUrl }: Props) {
 								<button
 									type="button"
 									data-state={seats.value[0] !== undefined ? "live" : "ready"}
-									data-active={virtualLive.value ? "true" : undefined}
+									data-active={localLive.value ? "true" : undefined}
 									disabled={!connected.value}
 									onClick={() => setVirtualEnabled(false)}
 								>
@@ -681,6 +1066,8 @@ export default function Play({ nodeUrl }: Props) {
 								</button>
 							</div>
 						)
+						: touchPrefs.value.enabled
+						? null
 						: pads.value.length > 0
 						? (
 							<div className="pad-list">
@@ -723,6 +1110,14 @@ export default function Play({ nodeUrl }: Props) {
 								>
 									Use virtual controller
 								</button>
+								<button
+									type="button"
+									className="btn"
+									disabled={!connected.value || occupied.value.length >= PAD_COUNT}
+									onClick={() => setTouchEnabled(true)}
+								>
+									Use touch controller
+								</button>
 							</>
 						)}
 					<div>
@@ -737,6 +1132,57 @@ export default function Play({ nodeUrl }: Props) {
 								<Keyboard size={16} />
 							</button>
 						)}
+						{!virtualPrefs.value.enabled && !touchPrefs.value.enabled && pads.value.length > 0 && (
+							<button
+								type="button"
+								className="btn btn-icon"
+								aria-label="Map controller buttons"
+								title="Map controller buttons"
+								onClick={() => {
+									settings.value = false;
+									mapOpen.value = false;
+									gamepadMapOpen.value = true;
+								}}
+							>
+								<Gamepad2 size={16} />
+							</button>
+						)}
+						<button
+							type="button"
+							className="btn btn-icon"
+							data-active={touchPrefs.value.enabled ? "true" : undefined}
+							data-live={localLive.value && touchPrefs.value.enabled ? "true" : undefined}
+							aria-label="Touch controller"
+							aria-pressed={touchPrefs.value.enabled}
+							title={touchPrefs.value.enabled
+								? `Touch controller${
+									seats.value[0] !== undefined ? ` (P${seats.value[0] + 1})` : " is starting..."
+								} — tap to turn off`
+								: "Turn on the touch controller"}
+							onClick={() => setTouchEnabled(!touchPrefs.value.enabled)}
+						>
+							<Smartphone size={16} />
+						</button>
+						{touchPrefs.value.enabled && (
+							<button
+								type="button"
+								className="btn btn-icon"
+								aria-label="Edit touch layout"
+								title="Edit touch layout"
+								onClick={editTouchLayout}
+							>
+								<Move size={16} />
+							</button>
+						)}
+						<button
+							type="button"
+							className="btn btn-icon"
+							aria-label="Hide all UI"
+							title="Hide all UI (tap the stream to show)"
+							onClick={hideAllUi}
+						>
+							<EyeOff size={16} />
+						</button>
 						<button
 							type="button"
 							className="btn btn-icon"
@@ -765,6 +1211,15 @@ export default function Play({ nodeUrl }: Props) {
 				</div>
 			</div>
 
+			{touchPrefs.value.enabled && !uiHidden.value && (
+				<TouchController
+					prefs={touchPrefs}
+					state={touchState}
+					editing={touchEditing.value}
+					onDone={() => touchEditing.value = false}
+				/>
+			)}
+
 			{settings.value && (
 				<aside onClick={(event) => event.stopPropagation()}>
 					<div>
@@ -782,7 +1237,7 @@ export default function Play({ nodeUrl }: Props) {
 					<div className="field">
 						<span>Node</span>
 						<div>
-							<p>{nodeUrl}</p>
+							<p>{activeNodeUrl}</p>
 						</div>
 					</div>
 
@@ -857,6 +1312,106 @@ export default function Play({ nodeUrl }: Props) {
 						>
 							Map buttons (Tab)
 						</button>
+					</section>
+
+					<section>
+						<h3>Touch controller</h3>
+						<label>
+							<input
+								type="checkbox"
+								checked={touchPrefs.value.enabled}
+								onChange={(event) => setTouchEnabled((event.target as HTMLInputElement).checked)}
+							/>
+							Enable touch controller
+						</label>
+						<p>
+							On-screen buttons and two sticks for a phone or tablet. It uses one Pico seat; the keyboard
+							virtual controller and physical gamepads are paused while it is on.
+						</p>
+						<label className="field">
+							<span>Control size</span>
+							<input
+								type="range"
+								min="0.7"
+								max="1.25"
+								step="0.05"
+								value={touchPrefs.value.scale}
+								onInput={(event) => {
+									touchPrefs.value = {
+										...touchPrefs.value,
+										scale: Number((event.target as HTMLInputElement).value),
+									};
+								}}
+							/>
+						</label>
+						<div className="touch-settings-actions">
+							<button
+								type="button"
+								className="btn"
+								disabled={!touchPrefs.value.enabled}
+								onClick={editTouchLayout}
+							>
+								Edit layout
+							</button>
+							<button
+								type="button"
+								className="btn"
+								disabled={!touchPrefs.value.enabled}
+								onClick={resetTouchLayouts}
+							>
+								Reset layout
+							</button>
+						</div>
+						<p>
+							In edit mode, drag every control where you want it. Landscape and portrait positions are
+							saved separately in this browser.
+						</p>
+					</section>
+
+					<section>
+						<h3>iPhone fullscreen</h3>
+						<p>
+							iPhone Safari's native video fullscreen pauses web controller input. To play fullscreen with
+							a Backbone or touch controller, open the page, use Share → Add to Home Screen, and launch
+							s2pipe from the Home Screen. Native fullscreen remains available when no controller is
+							connected, for watching.
+						</p>
+					</section>
+
+					<section>
+						<h3>Hide UI</h3>
+						<p>
+							The eye button in the HUD hides the HUD, touch pad, stats and toasts. Tap the stream or
+							press Esc to show them again. Physical gamepad and keyboard input keep working while the UI
+							is hidden.
+						</p>
+					</section>
+
+					<section>
+						<h3>Controller mapping</h3>
+						<p>
+							Remap a physical gamepad's buttons, swap or invert sticks, and adjust the deadzone. The
+							mapping is stored in this browser.
+						</p>
+						{(virtualPrefs.value.enabled || touchPrefs.value.enabled) && (
+							<p>
+								Turn off the {virtualPrefs.value.enabled ? "virtual" : "touch"}{" "}
+								controller to use a physical gamepad.
+							</p>
+						)}
+						<button
+							type="button"
+							className="btn btn-block"
+							disabled={pads.value.length === 0 || virtualPrefs.value.enabled || touchPrefs.value.enabled}
+							onClick={() => {
+								if (virtualPrefs.value.enabled || touchPrefs.value.enabled) return;
+								settings.value = false;
+								gamepadMapOpen.value = true;
+							}}
+						>
+							Map controller buttons
+						</button>
+						{pads.value.length === 0 && <p>Connect a gamepad and press a button to make it available.</p>}
 					</section>
 
 					<section>

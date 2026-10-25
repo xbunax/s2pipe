@@ -4129,6 +4129,8 @@ dependencies = [
  "dirs",
  "flate2",
  "futures",
+ "hex",
+ "hmac",
  "include_dir",
  "liblzma",
  "nokhwa",
@@ -4136,6 +4138,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sha2",
  "tar",
  "tokio",
  "windows 0.58.0",
@@ -4151,6 +4154,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
+ "tokio",
 ]
 
 [[package]]

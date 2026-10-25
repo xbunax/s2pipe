@@ -1,6 +1,7 @@
 use s2pipe_core::{
     local_ip as detect_local_ip, public_ip as detect_public_ip, set_autostart, AppConfig,
-    AudioDevice, CaptureDevice, SerialPortInfo, Stack, WakeScanResult,
+    AudioDevice, CaptureDevice, PicoSetup, SerialPortInfo, Stack, WakeScanResult, WifiDevice,
+    WifiTestResult,
 };
 
 #[tauri::command]
@@ -21,6 +22,41 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
     s2pipe_core::list_serial_ports()
+}
+
+#[tauri::command]
+pub async fn discover_wifi_devices(timeout_ms: u64) -> Result<Vec<WifiDevice>, String> {
+    tokio::task::spawn_blocking(move || s2pipe_core::discover_wifi_devices(timeout_ms))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn read_pico_setup() -> Result<PicoSetup, String> {
+    tokio::task::spawn_blocking(s2pipe_core::read_pico_setup)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn provision_pico_wifi(ssid: String, password: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || s2pipe_core::provision_pico_wifi(&ssid, &password))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn test_wifi_device(
+    host: String,
+    port: u16,
+    key_hex: String,
+    pulse: Option<bool>,
+) -> Result<WifiTestResult, String> {
+    tokio::task::spawn_blocking(move || {
+        s2pipe_core::test_wifi_device(&host, port, &key_hex, pulse.unwrap_or(true))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

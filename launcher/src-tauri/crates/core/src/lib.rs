@@ -6,8 +6,9 @@ mod utils;
 
 pub use config::{load_config, save_config, AppConfig};
 pub use modules::{
-    list_audio_devices, list_capture_devices, list_serial_ports, scan_bluetooth_pad, AudioDevice,
-    CaptureDevice, SerialPortInfo, WakeScanResult,
+    discover_wifi_devices, list_audio_devices, list_capture_devices, list_serial_ports,
+    provision_pico_wifi, read_pico_setup, scan_bluetooth_pad, test_wifi_device, AudioDevice,
+    CaptureDevice, PicoSetup, SerialPortInfo, WakeScanResult, WifiDevice, WifiTestResult,
 };
 pub use stack::Stack;
 pub use utils::autostart::set_autostart;

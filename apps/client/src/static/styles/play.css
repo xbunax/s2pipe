@@ -20,6 +20,19 @@
 	transition: none;
 }
 
+#play[data-ui-hidden="true"] > #hud,
+#play[data-ui-hidden="true"] > #touch-pad,
+#play[data-ui-hidden="true"] > dl,
+#play[data-ui-hidden="true"] > aside,
+#play[data-ui-hidden="true"] > ul,
+#play[data-ui-hidden="true"] > div:has(> h2) {
+	display: none;
+}
+
+#play[data-ui-hidden="true"] {
+	cursor: none;
+}
+
 #play > video {
 	width: 100%;
 	height: 100%;

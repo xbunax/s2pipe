@@ -67,6 +67,21 @@ struct StartArgs {
     idle_stop_seconds: Option<u32>,
     #[arg(long)]
     pico_serial: Option<String>,
+    /// serial or wifi
+    #[arg(long)]
+    controller_mode: Option<String>,
+    #[arg(long)]
+    pico_wifi_host: Option<String>,
+    #[arg(long)]
+    pico_wifi_port: Option<String>,
+    #[arg(long)]
+    pico_wifi_key: Option<String>,
+    #[arg(long)]
+    pico_wifi_device_id: Option<String>,
+    #[arg(long)]
+    pico_wifi_device_name: Option<String>,
+    #[arg(long)]
+    pico_wifi_auto_discover: Option<bool>,
     #[arg(long)]
     switch_bt_mac: Option<String>,
     #[arg(long)]
@@ -114,6 +129,13 @@ impl StartArgs {
         overlay(&mut config.video_custom, self.video_custom);
         overlay(&mut config.idle_stop_seconds, self.idle_stop_seconds);
         overlay(&mut config.pico_serial, self.pico_serial);
+        overlay(&mut config.controller_mode, self.controller_mode);
+        overlay(&mut config.pico_wifi_host, self.pico_wifi_host);
+        overlay(&mut config.pico_wifi_port, self.pico_wifi_port);
+        overlay(&mut config.pico_wifi_key, self.pico_wifi_key);
+        overlay(&mut config.pico_wifi_device_id, self.pico_wifi_device_id);
+        overlay(&mut config.pico_wifi_device_name, self.pico_wifi_device_name);
+        overlay(&mut config.pico_wifi_auto_discover, self.pico_wifi_auto_discover);
         overlay(&mut config.switch_bt_mac, self.switch_bt_mac);
         overlay(&mut config.controller_bt_mac, self.controller_bt_mac);
         overlay(&mut config.controller_bt_pid, self.controller_bt_pid);

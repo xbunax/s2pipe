@@ -44,7 +44,8 @@ void packet_init(pad_state_t pads[PAD_COUNT]) {
 	packet_neutral(pads);
 }
 
-static bool parse_frame(uint8_t const *frame, pad_state_t pads[PAD_COUNT]) {
+bool packet_apply_frame(uint8_t const *frame, pad_state_t pads[PAD_COUNT]) {
+	if (frame[0] != (PACKET_MAGIC & 0xff) || frame[1] != (PACKET_MAGIC >> 8)) return false;
 	if (frame[2] != PACKET_VERSION) return false;
 
 	uint16_t got = (uint16_t)frame[PACKET_CRC_OFF] | ((uint16_t)frame[PACKET_CRC_OFF + 1] << 8);
@@ -91,7 +92,7 @@ bool packet_push(uint8_t byte, pad_state_t pads[PAD_COUNT]) {
 		memmove(buf, buf + mag, len);
 		return false;
 	}
-	if (parse_frame(buf, pads)) {
+	if (packet_apply_frame(buf, pads)) {
 		len = 0;
 		return true;
 	}

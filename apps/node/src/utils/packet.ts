@@ -29,6 +29,46 @@ function crc16ccitt(data: Uint8Array): number {
 	return crc;
 }
 
+export type DecodedPacket = {
+	pads: PadState[];
+	wake: WakeAddrs | null;
+};
+
+export function decodePacket(packet: Uint8Array): DecodedPacket | null {
+	if (packet.length !== PACKET_SIZE) return null;
+
+	const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+	if (view.getUint16(0, true) !== PACKET_MAGIC) return null;
+	if (view.getUint8(2) !== PACKET_VERSION) return null;
+	if (view.getUint16(PACKET_CRC_OFF, true) !== crc16ccitt(packet.subarray(0, PACKET_CRC_OFF))) {
+		return null;
+	}
+
+	const pads: PadState[] = [];
+	let offset = PACKET_PADS_OFF;
+	for (let i = 0; i < PAD_COUNT; i++) {
+		pads.push({
+			buttons: view.getUint32(offset, true),
+			lx: packet[offset + 4]!,
+			ly: packet[offset + 5]!,
+			rx: packet[offset + 6]!,
+			ry: packet[offset + 7]!,
+		});
+		offset += PACKET_PAD_SIZE;
+	}
+
+	let wake: WakeAddrs | null = null;
+	if (view.getUint8(3) & PACKET_FLAG_WAKE) {
+		wake = {
+			switchMac: packet.slice(PACKET_WAKE_SWITCH_OFF, PACKET_WAKE_SWITCH_OFF + 6),
+			padMac: packet.slice(PACKET_WAKE_PAD_OFF, PACKET_WAKE_PAD_OFF + 6),
+			pid: view.getUint16(PACKET_WAKE_PID_OFF, true),
+		};
+	}
+
+	return { pads, wake };
+}
+
 export function encodePacket(pads: readonly PadState[], wake?: WakeAddrs | null): Uint8Array {
 	const packet = new Uint8Array(PACKET_SIZE);
 	const view = new DataView(packet.buffer);

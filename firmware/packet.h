@@ -33,6 +33,7 @@ typedef struct {
 void packet_init(pad_state_t pads[PAD_COUNT]);
 void packet_neutral(pad_state_t pads[PAD_COUNT]);
 bool packet_push(uint8_t byte, pad_state_t pads[PAD_COUNT]);
+bool packet_apply_frame(uint8_t const frame[PACKET_SIZE], pad_state_t pads[PAD_COUNT]);
 bool packet_take_wake(uint8_t switch_mac[6], uint8_t pad_mac[6], uint16_t *pid);
 
 #endif

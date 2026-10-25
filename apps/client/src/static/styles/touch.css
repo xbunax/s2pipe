@@ -1,0 +1,320 @@
+/* On-screen controller for touch devices */
+
+#touch-pad {
+	--touch-unit: clamp(2.1rem, 8.5vmin, 3.25rem);
+
+	position: absolute;
+	inset:
+		env(safe-area-inset-top, 0px)
+		env(safe-area-inset-right, 0px)
+		env(safe-area-inset-bottom, 0px)
+		env(safe-area-inset-left, 0px);
+	z-index: 1;
+
+	pointer-events: none;
+	touch-action: none;
+
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+#touch-pad[data-editing="true"]::before {
+	content: "";
+
+	position: absolute;
+	inset: 0;
+
+	background: rgb(0 0 0 / 0.32);
+	pointer-events: none;
+}
+
+.touch-item {
+	position: absolute;
+
+	transform: translate(-50%, -50%);
+
+	pointer-events: auto;
+	touch-action: none;
+
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+#touch-pad[data-editing="true"] .touch-item {
+	outline: 1px dashed rgb(255 255 255 / 0.55);
+	outline-offset: 2px;
+	border-radius: 999px;
+
+	cursor: grab;
+}
+
+#touch-pad[data-editing="true"] .touch-item[data-dragging="true"] {
+	cursor: grabbing;
+	outline-color: var(--accent);
+	outline-style: solid;
+}
+
+.touch-button {
+	width: 100%;
+	height: 100%;
+
+	display: flex;
+	justify-content: center;
+	align-items: center;
+
+	color: var(--text);
+	font-family: var(--font-sans);
+	font-size: clamp(0.65rem, 2.1vmin, 0.95rem);
+	font-weight: 600;
+	line-height: 1;
+
+	background: rgb(8 10 14 / 0.58);
+	border: 1px solid rgb(255 255 255 / 0.22);
+	border-radius: 999px;
+	box-shadow: 0 2px 10px rgb(0 0 0 / 0.28);
+
+	-webkit-backdrop-filter: blur(4px);
+	backdrop-filter: blur(4px);
+
+	touch-action: none;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+.touch-button[data-pressed="true"] {
+	color: var(--on-accent);
+	background: var(--accent);
+	border-color: var(--accent);
+	transform: scale(0.94);
+}
+
+.touch-stick {
+	position: relative;
+
+	width: 100%;
+	height: 100%;
+
+	background: radial-gradient(circle, rgb(255 255 255 / 0.07), rgb(8 10 14 / 0.55) 72%);
+	border: 1px solid rgb(255 255 255 / 0.22);
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.04), 0 4px 16px rgb(0 0 0 / 0.3);
+
+	touch-action: none;
+}
+
+.touch-stick::after {
+	content: "";
+
+	position: absolute;
+	inset: 31%;
+
+	border: 1px dashed rgb(255 255 255 / 0.12);
+	border-radius: 50%;
+	pointer-events: none;
+}
+
+.touch-stick-knob {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+
+	width: 42%;
+	height: 42%;
+
+	transform: translate(-50%, -50%);
+
+	background: rgb(238 241 244 / 0.18);
+	border: 1px solid rgb(255 255 255 / 0.35);
+	border-radius: 50%;
+	box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+	pointer-events: none;
+	will-change: transform;
+}
+
+.touch-stick[data-active="true"] {
+	border-color: var(--accent);
+}
+
+.touch-stick[data-active="true"] .touch-stick-knob {
+	background: var(--accent);
+	border-color: var(--accent);
+}
+
+.touch-dpad {
+	position: relative;
+
+	width: 100%;
+	height: 100%;
+
+	background: rgb(8 10 14 / 0.52);
+	border: 1px solid rgb(255 255 255 / 0.22);
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.04), 0 4px 16px rgb(0 0 0 / 0.3);
+
+	touch-action: none;
+}
+
+.touch-dpad-arrow {
+	position: absolute;
+
+	width: 31%;
+	height: 31%;
+
+	background: rgb(255 255 255 / 0.16);
+	pointer-events: none;
+}
+
+.touch-dpad-arrow[data-dir="up"] {
+	top: 7%;
+	left: 34.5%;
+
+	clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.touch-dpad-arrow[data-dir="down"] {
+	bottom: 7%;
+	left: 34.5%;
+
+	clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+.touch-dpad-arrow[data-dir="left"] {
+	top: 34.5%;
+	left: 7%;
+
+	clip-path: polygon(100% 0, 100% 100%, 0 50%);
+}
+
+.touch-dpad-arrow[data-dir="right"] {
+	top: 34.5%;
+	right: 7%;
+
+	clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+
+.touch-dpad-arrow[data-on="true"] {
+	background: var(--accent);
+}
+
+.touch-dpad-hub {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+
+	width: 27%;
+	height: 27%;
+
+	transform: translate(-50%, -50%);
+
+	background: rgb(8 10 14 / 0.6);
+	border: 1px solid rgb(255 255 255 / 0.16);
+	border-radius: 50%;
+	pointer-events: none;
+}
+
+.touch-edit-bar {
+	position: absolute;
+	top: var(--space-2);
+	left: 50%;
+
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	align-items: center;
+	gap: var(--space-2);
+
+	max-width: calc(100% - 2 * var(--space-3));
+	padding: var(--space-2);
+
+	transform: translateX(-50%);
+
+	color: var(--text);
+	font-size: var(--text-sm);
+
+	background: rgb(14 16 20 / 0.9);
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+
+	pointer-events: auto;
+	z-index: 2;
+}
+
+.touch-edit-bar > span {
+	color: var(--muted);
+
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	gap: 0.35rem;
+
+	padding-inline: var(--space-2);
+}
+
+.touch-edit-bar .btn {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	gap: 0.35rem;
+
+	padding: 0.35rem 0.65rem;
+
+	font-size: var(--text-sm);
+}
+
+/* Touch mode keeps the page controls in a compact top-right strip. */
+#play[data-touch="true"] > #hud {
+	background: linear-gradient(to bottom, rgb(7 8 10 / 0.55) 0%, transparent 18%);
+}
+
+#play[data-touch="true"] > #hud > div:first-child {
+	display: none;
+}
+
+#play[data-touch="true"] > #hud .pad-list {
+	display: none;
+}
+
+#play[data-touch="true"] > #hud > div:last-child {
+	position: absolute;
+	top: calc(var(--space-3) + env(safe-area-inset-top, 0px));
+	right: calc(var(--space-3) + env(safe-area-inset-right, 0px));
+	bottom: auto;
+	left: auto;
+
+	padding: 0;
+
+	pointer-events: none;
+}
+
+#play[data-touch="true"] > #hud > div:last-child > div:last-child {
+	position: static;
+
+	pointer-events: auto;
+}
+
+#play[data-touch-edit="true"] > #hud {
+	display: none;
+}
+
+#play > #hud .btn[data-active="true"] {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+#play > #hud .btn[data-live="true"] {
+	box-shadow: 0 0 0 1px var(--accent), 0 0 12px rgb(62 230 160 / 0.45);
+}
+
+#play > aside .touch-settings-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+}
+
+#play > aside .touch-settings-actions .btn {
+	flex: 1 1 auto;
+}

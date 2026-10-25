@@ -30,6 +30,41 @@ interface WakeScanResult {
 	controllerBtPid: string;
 }
 
+interface WifiDevice {
+	id: string;
+	name: string;
+	ip: string;
+	port: number;
+	disc: number;
+	fw: string;
+	rssi: number;
+	session: number;
+	boot: number;
+	latencyMs: number | null;
+	lastSeenMs: number;
+}
+
+interface WifiTestResult {
+	id: string;
+	name: string;
+	ip: string;
+	port: number;
+	latencyMs: number;
+	rssi: number;
+	firmware: string;
+	pulsed: boolean;
+}
+
+interface PicoSetup {
+	port: string;
+	id: string;
+	ssid: string;
+	password: string;
+	psk: string;
+	fw: string;
+	mode: string;
+}
+
 
 /* -------------------------------------------------------------------------- */
 /* Defaults                                                                   */
@@ -60,6 +95,13 @@ const DEFAULT_CONFIG: AppConfig = {
 	idleStopSeconds: 15,
 
 	picoSerial: "",
+	controllerMode: "serial",
+	picoWifiHost: "",
+	picoWifiPort: "30100",
+	picoWifiKey: "",
+	picoWifiDeviceId: "",
+	picoWifiDeviceName: "",
+	picoWifiAutoDiscover: true,
 
 	switchBtMac: "",
 	controllerBtMac: "",
@@ -153,6 +195,18 @@ function App() {
 	const [scanning, setScanning] = useState(false);
 	const [bluetoothError, setBluetoothError] = useState(false);
 
+	const [wifiDevices, setWifiDevices] = useState<WifiDevice[]>([]);
+	const [scanningWifi, setScanningWifi] = useState(false);
+	const [testingWifi, setTestingWifi] = useState(false);
+	const [pairingPico, setPairingPico] = useState(false);
+	const [wifiTest, setWifiTest] = useState<WifiTestResult | null>(null);
+	const [picoSetup, setPicoSetup] = useState<PicoSetup | null>(null);
+	const [showWifiKey, setShowWifiKey] = useState(false);
+	const [wifiProvisionSsid, setWifiProvisionSsid] = useState("");
+	const [wifiProvisionPass, setWifiProvisionPass] = useState("");
+	const [showProvisionPass, setShowProvisionPass] = useState(false);
+	const [provisioningWifi, setProvisioningWifi] = useState(false);
+
 	const toasters = useToasters();
 
 	/* ---------------------------------------------------------------------- */
@@ -162,6 +216,8 @@ function App() {
 	const bluetoothConfigured = config.switchBtMac.trim() !== "" &&
 		config.controllerBtMac.trim() !== "" &&
 		config.controllerBtPid.trim() !== "";
+
+	const wifiKeyValid = /^[0-9a-fA-F]{64}$/.test(config.picoWifiKey.trim().replace(/[\s:-]/g, ""));
 
 	const isResolutionActive = (width: number, height: number) =>
 		config.captureWidth === width &&
@@ -395,6 +451,156 @@ function App() {
 	}
 
 	/* ---------------------------------------------------------------------- */
+	/* Wi-Fi controller                                                        */
+	/* ---------------------------------------------------------------------- */
+
+	function selectWifiDevice(device: WifiDevice) {
+		setConfig((current) => {
+			const next = {
+				...current,
+				controllerMode: "wifi" as const,
+				picoWifiHost: device.ip,
+				picoWifiPort: String(device.port),
+				picoWifiDeviceId: device.id,
+				picoWifiDeviceName: device.name,
+			};
+			void persistConfig(next);
+			return next;
+		});
+	}
+
+	async function scanWifi() {
+		if (scanningWifi) return;
+		setScanningWifi(true);
+		setWifiTest(null);
+		try {
+			const devices = await invoke<WifiDevice[]>("discover_wifi_devices", { timeoutMs: 3000 });
+			setWifiDevices(devices);
+			if (devices.length === 0) {
+				showError("No Wi-Fi controller found.", {
+					description:
+						"Check that the Pico is on the 2.4 GHz Wi-Fi, allow UDP 30101 in the firewall, or type its IP below.",
+				});
+				return;
+			}
+			if (devices.length === 1) selectWifiDevice(devices[0]);
+		} catch (error) {
+			console.error("discover_wifi_devices failed:", error);
+			showError("Wi-Fi scan failed.", { description: getErrorMessage(error) });
+		} finally {
+			setScanningWifi(false);
+		}
+	}
+
+	async function pairPico() {
+		if (pairingPico) return;
+		setPairingPico(true);
+		try {
+			const setup = await invoke<PicoSetup>("read_pico_setup");
+			setPicoSetup(setup);
+			setConfig((current) => {
+				const next = {
+					...current,
+					controllerMode: "wifi" as const,
+					picoWifiKey: setup.psk,
+					picoWifiDeviceId: setup.id,
+					picoWifiDeviceName: "Pico 2 W",
+				};
+				void persistConfig(next);
+				return next;
+			});
+			showSuccess("Pico paired.", {
+				description:
+					`Join ${setup.ssid} from your phone, open http://192.168.4.1, and enter the home 2.4 GHz Wi-Fi.`,
+			});
+		} catch (error) {
+			console.error("read_pico_setup failed:", error);
+			showError("Could not read the Pico setup.", { description: getErrorMessage(error) });
+		} finally {
+			setPairingPico(false);
+		}
+	}
+
+	async function saveWifiToPico() {
+		if (provisioningWifi) return;
+		const ssid = wifiProvisionSsid.trim();
+		if (!ssid) {
+			showError("Enter the 2.4 GHz Wi-Fi name.");
+			return;
+		}
+		if (wifiProvisionPass.length !== 0 && (wifiProvisionPass.length < 8 || wifiProvisionPass.length > 63)) {
+			showError("Wi-Fi password must be 8-63 characters, or empty for an open network.");
+			return;
+		}
+
+		setProvisioningWifi(true);
+		try {
+			const port = await invoke<string>("provision_pico_wifi", {
+				ssid,
+				password: wifiProvisionPass,
+			});
+			showSuccess("Wi-Fi saved to the Pico.", {
+				description:
+					`Pico is rebooting and will join ${ssid}. USB port: ${port}. After it gets an IP, click Scan Wi-Fi.`,
+			});
+			setWifiProvisionPass("");
+		} catch (error) {
+			console.error("provision_pico_wifi failed:", error);
+			showError("Could not save Wi-Fi to the Pico.", { description: getErrorMessage(error) });
+		} finally {
+			setProvisioningWifi(false);
+		}
+	}
+
+	async function testWifi() {
+		if (testingWifi) return;
+		if (!isValidPort(config.picoWifiPort)) {
+			showError("Pico control port is invalid.");
+			return;
+		}
+		const host = config.picoWifiHost.trim();
+		if (!host) {
+			showError("Enter the Pico IP address or scan first.");
+			return;
+		}
+		if (!wifiKeyValid) {
+			showError("Paste the 64-character pairing key, or use Pair from USB.");
+			return;
+		}
+		setTestingWifi(true);
+		try {
+			const result = await invoke<WifiTestResult>("test_wifi_device", {
+				host,
+				port: Number(config.picoWifiPort.trim()),
+				keyHex: config.picoWifiKey.trim(),
+				pulse: true,
+			});
+			setWifiTest(result);
+			setConfig((current) => {
+				const next = {
+					...current,
+					controllerMode: "wifi" as const,
+					picoWifiHost: result.ip,
+					picoWifiPort: String(result.port),
+					picoWifiDeviceId: result.id || current.picoWifiDeviceId,
+					picoWifiDeviceName: result.name || current.picoWifiDeviceName,
+				};
+				void persistConfig(next);
+				return next;
+			});
+			showSuccess("Controller test passed.", {
+				description: `RTT ${result.latencyMs} ms, ${result.rssi} dBm. A was pulsed on pad 1.`,
+			});
+		} catch (error) {
+			console.error("test_wifi_device failed:", error);
+			setWifiTest(null);
+			showError("Controller test failed.", { description: getErrorMessage(error) });
+		} finally {
+			setTestingWifi(false);
+		}
+	}
+
+	/* ---------------------------------------------------------------------- */
 	/* Capture source                                                          */
 	/* ---------------------------------------------------------------------- */
 
@@ -488,6 +694,25 @@ function App() {
 		if (bluetoothPartiallyConfigured && !bluetoothConfigured) {
 			showError("Bluetooth configuration is incomplete.");
 			return false;
+		}
+
+		if (config.controllerMode === "wifi") {
+			if (!config.picoWifiHost.trim()) {
+				showError("Pico Wi-Fi address is empty.", {
+					description: "Click Scan, pick a device, or type the Pico IP address.",
+				});
+				return false;
+			}
+			if (!isValidPort(config.picoWifiPort)) {
+				showError("Pico Wi-Fi control port is invalid.");
+				return false;
+			}
+			if (!wifiKeyValid) {
+				showError("Pico Wi-Fi pairing key is missing or invalid.", {
+					description: "Use Pair from USB or paste the 64-character key.",
+				});
+				return false;
+			}
 		}
 
 		return true;
@@ -944,51 +1169,304 @@ function App() {
 							<h2>Pico</h2>
 
 							<p>
-								Serial link to the Pico that drives the USB pads.
+								USB UART or Wi-Fi link to the Pico that drives the USB pads.
 							</p>
 						</section>
 
-						<label>
-							<span>Pico port</span>
+						<div className="presets-block">
+							<span>Controller transport</span>
 
-							<DevicePicker
-								id="picoSerial"
-								value={config.picoSerial}
-								placeholder={{ value: "", label: "None (video only)" }}
-								options={serialPorts}
-								detecting={detectingSerial}
-								onChange={(value) => updateConfig("picoSerial", value)}
-								onRefresh={() => void refreshSerialPorts()}
-							/>
+							<div className="presets">
+								<button
+									type="button"
+									className={`preset-btn${config.controllerMode === "serial" ? " active" : ""}`}
+									onClick={() => updateConfig("controllerMode", "serial")}
+								>
+									USB Serial
+								</button>
 
-							<small>
-								Choose None if you only need video.
-							</small>
-						</label>
-
-						{advancedMode && (
-							<div className="fields-grid advanced">
-								<div className="field">
-									<label>
-										<span>Manual port</span>
-
-										<input
-											id="picoSerialManual"
-											type="text"
-											value={config.picoSerial}
-											onInput={(event) =>
-												updateConfig(
-													"picoSerial",
-													(
-														event.currentTarget as HTMLInputElement
-													).value,
-												)}
-											placeholder="/dev/ttyUSB0 or COM3"
-										/>
-									</label>
-								</div>
+								<button
+									type="button"
+									className={`preset-btn${config.controllerMode === "wifi" ? " active" : ""}`}
+									onClick={() => updateConfig("controllerMode", "wifi")}
+								>
+									Wi-Fi
+								</button>
 							</div>
-						)}
+						</div>
+
+						{config.controllerMode === "serial"
+							? (
+								<>
+									<label>
+										<span>Pico port</span>
+
+										<DevicePicker
+											id="picoSerial"
+											value={config.picoSerial}
+											placeholder={{ value: "", label: "None (video only)" }}
+											options={serialPorts}
+											detecting={detectingSerial}
+											onChange={(value) => updateConfig("picoSerial", value)}
+											onRefresh={() => void refreshSerialPorts()}
+										/>
+
+										<small>
+											Choose None if you only need video.
+										</small>
+									</label>
+
+									{advancedMode && (
+										<div className="fields-grid advanced">
+											<div className="field">
+												<label>
+													<span>Manual port</span>
+
+													<input
+														id="picoSerialManual"
+														type="text"
+														value={config.picoSerial}
+														onInput={(event) =>
+															updateConfig(
+																"picoSerial",
+																(
+																	event.currentTarget as HTMLInputElement
+																).value,
+															)}
+														placeholder="/dev/ttyUSB0 or COM3"
+													/>
+												</label>
+											</div>
+										</div>
+									)}
+								</>
+							)
+							: (
+								<div className="wifi-controller">
+									<div className="select-with-button">
+										<button
+											type="button"
+											onClick={() => void scanWifi()}
+											disabled={scanningWifi}
+										>
+											{scanningWifi ? "Scanning..." : "Scan Wi-Fi"}
+										</button>
+
+										<button
+											type="button"
+											onClick={() => void pairPico()}
+											disabled={pairingPico}
+										>
+											{pairingPico ? "Reading USB..." : "Pair from USB"}
+										</button>
+									</div>
+
+									<div className="wifi-setup">
+										<strong>Configure Wi-Fi via USB</strong>
+										<p>
+											Connect the Pico to this PC with a data USB cable. The password is
+											sent only over USB and is not stored by the launcher.
+										</p>
+
+										<div className="field">
+											<label>
+												<span>Wi-Fi name (2.4 GHz)</span>
+
+												<input
+													id="wifiProvisionSsid"
+													type="text"
+													value={wifiProvisionSsid}
+													onInput={(event) =>
+														setWifiProvisionSsid(
+															(event.currentTarget as HTMLInputElement).value,
+														)}
+													placeholder="Example_2.4G"
+													autocomplete="off"
+													autocapitalize="off"
+												/>
+											</label>
+										</div>
+
+										<div className="field">
+											<label htmlFor="wifiProvisionPass">
+												<span>Wi-Fi password</span>
+											</label>
+
+											<div className="key-row">
+												<input
+													id="wifiProvisionPass"
+													type={showProvisionPass ? "text" : "password"}
+													value={wifiProvisionPass}
+													onInput={(event) =>
+														setWifiProvisionPass(
+															(event.currentTarget as HTMLInputElement).value,
+														)}
+													placeholder="8-63 characters, empty for open"
+													autocomplete="new-password"
+												/>
+
+												<button
+													type="button"
+													onClick={() => setShowProvisionPass((value) => !value)}
+												>
+													{showProvisionPass ? "Hide" : "Show"}
+												</button>
+											</div>
+										</div>
+
+										<button
+											type="button"
+											className="wifi-save-button"
+											onClick={() => void saveWifiToPico()}
+											disabled={provisioningWifi}
+										>
+											{provisioningWifi ? "Saving..." : "Save Wi-Fi to Pico"}
+										</button>
+									</div>
+
+									{wifiDevices.length > 0 && (
+										<div className="wifi-devices">
+											{wifiDevices.map((device) => (
+												<button
+													type="button"
+													key={device.id}
+													className={`wifi-device${
+														device.ip === config.picoWifiHost ? " active" : ""
+													}`}
+													onClick={() => selectWifiDevice(device)}
+												>
+													<strong>{device.name}</strong>
+													<span>{device.ip}:{device.port}</span>
+													<span>
+														{device.rssi} dBm{device.fw ? ` · ${device.fw}` : ""}
+													</span>
+												</button>
+											))}
+										</div>
+									)}
+
+									{picoSetup && (
+										<div className="wifi-setup">
+											<strong>Pico setup hotspot</strong>
+											<p>
+												On your phone join <code>{picoSetup.ssid}</code>{" "}
+												with password <code>{picoSetup.password}</code>, then open{" "}
+												<code>http://192.168.4.1</code> and enter the 2.4 GHz Wi-Fi
+												name and password.
+											</p>
+											<p>The pairing key was read over USB and saved.</p>
+										</div>
+									)}
+
+									<div className="fields-grid">
+										<div className="field">
+											<label>
+												<span>Pico IP</span>
+
+												<input
+													id="picoWifiHost"
+													type="text"
+													value={config.picoWifiHost}
+													onInput={(event) =>
+														updateConfig(
+															"picoWifiHost",
+															(event.currentTarget as HTMLInputElement).value,
+														)}
+													placeholder="192.168.1.120"
+												/>
+											</label>
+										</div>
+
+										<div className="field">
+											<label>
+												<span>Control port</span>
+
+												<input
+													id="picoWifiPort"
+													type="text"
+													value={config.picoWifiPort}
+													onInput={(event) =>
+														updateConfig(
+															"picoWifiPort",
+															(event.currentTarget as HTMLInputElement).value,
+														)}
+													placeholder="30100"
+												/>
+											</label>
+										</div>
+									</div>
+
+									<div className="field">
+										<label htmlFor="picoWifiKey">
+											<span>Pairing key</span>
+										</label>
+
+										<div className="key-row">
+											<input
+												id="picoWifiKey"
+												type={showWifiKey ? "text" : "password"}
+												value={config.picoWifiKey}
+												onInput={(event) =>
+													updateConfig(
+														"picoWifiKey",
+														(event.currentTarget as HTMLInputElement).value,
+													)}
+												placeholder="64 hex characters"
+												autocomplete="off"
+											/>
+
+											<button
+												type="button"
+												onClick={() => setShowWifiKey((value) => !value)}
+											>
+												{showWifiKey ? "Hide" : "Show"}
+											</button>
+										</div>
+
+										<small>
+											Read automatically by Pair from USB, or paste the key shown on the
+											Pico setup page.
+										</small>
+									</div>
+
+									<div className="select-with-button">
+										<button
+											type="button"
+											onClick={() => void testWifi()}
+											disabled={testingWifi}
+										>
+											{testingWifi ? "Testing..." : "Test controller"}
+										</button>
+
+										<button
+											type="button"
+											onClick={() => void scanWifi()}
+											disabled={scanningWifi}
+										>
+											{scanningWifi ? "Scanning..." : "Scan again"}
+										</button>
+									</div>
+
+									{wifiTest
+										? (
+											<p className="wifi-status">
+												<strong>Connected</strong> · {wifiTest.name} · {wifiTest.ip}:
+												{wifiTest.port} · RTT {wifiTest.latencyMs} ms · {wifiTest.rssi}{" "}
+												dBm{wifiTest.pulsed ? " · A pulsed on pad 1" : ""}
+											</p>
+										)
+										: (
+											<p className="wifi-status muted">
+												Status: not tested. The Pico must be on the same LAN.
+											</p>
+										)}
+
+									<small>
+										Pico 2 W supports 2.4 GHz Wi-Fi only. If Scan cannot see it, type
+										the IP manually (AP isolation or firewall can block UDP 30101).
+									</small>
+								</div>
+							)}
 					</fieldset>
 
 					{/* ---------------------------------------------------------------- */}

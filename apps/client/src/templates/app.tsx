@@ -12,7 +12,15 @@ export default {
 	],
 	scripts: [],
 
-	head: null,
+	head: (
+		<>
+			<meta name="apple-mobile-web-app-capable" content="yes" />
+			<meta name="mobile-web-app-capable" content="yes" />
+			<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+			<meta name="apple-mobile-web-app-title" content="s2pipe" />
+			<meta name="theme-color" content="#07080a" />
+		</>
+	),
 	body: (
 		<div id="root">
 			<div id="app"></div>

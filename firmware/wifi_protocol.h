@@ -1,0 +1,31 @@
+#ifndef WIFI_PROTOCOL_H
+#define WIFI_PROTOCOL_H
+
+#include <stdint.h>
+
+/* Keep in sync with apps/node/src/utils/wifi_protocol.ts and
+   launcher/src-tauri/crates/core/src/modules/wifi.rs. */
+#define S2PIPE_WIFI_MAGIC 0x31573253u /* "S2W1" */
+#define S2PIPE_WIFI_VERSION 1
+#define S2PIPE_WIFI_CONTROL_PORT 30100
+#define S2PIPE_WIFI_DISCOVERY_PORT 30101
+
+#define S2PIPE_WIFI_PREFIX_LEN 24
+#define S2PIPE_WIFI_HMAC_OFF 24
+#define S2PIPE_WIFI_HMAC_LEN 16
+#define S2PIPE_WIFI_PAYLOAD_OFF 40
+#define S2PIPE_WIFI_PAYLOAD_MAX 200
+#define S2PIPE_WIFI_PACKET_MAX (S2PIPE_WIFI_PAYLOAD_OFF + S2PIPE_WIFI_PAYLOAD_MAX)
+
+#define S2PIPE_WIFI_FW_VERSION "wifi-1.0.0"
+
+enum {
+	S2PIPE_WIFI_HELLO = 1,
+	S2PIPE_WIFI_HELLO_ACK = 2,
+	S2PIPE_WIFI_CONTROL = 3,
+	S2PIPE_WIFI_PING = 4,
+	S2PIPE_WIFI_PONG = 5,
+	S2PIPE_WIFI_TEST = 6,
+};
+
+#endif

@@ -31,10 +31,14 @@
 
 #define CFG_TUD_ENDPOINT_MAX 16
 #define CFG_TUD_HID 8
-#define CFG_TUD_CDC 0
+#define CFG_TUD_CDC 1
 #define CFG_TUD_MSC 0
 #define CFG_TUD_MIDI 0
 #define CFG_TUD_VENDOR 0
+
+#define CFG_TUD_CDC_EP_BUFSIZE 64
+#define CFG_TUD_CDC_RX_BUFSIZE 64
+#define CFG_TUD_CDC_TX_BUFSIZE 512
 
 /* 8 bytes in, 8 bytes out. 64 would blow the full-speed periodic budget with 16 endpoints at 1 ms. */
 #define CFG_TUD_HID_EP_BUFSIZE 16

@@ -9,7 +9,7 @@ export default {
 
 	title: "s2pipe",
 
-	styles: ["/styles/play.css", "/styles/controller.css"],
+	styles: ["/styles/play.css", "/styles/controller.css", "/styles/touch.css"],
 	scripts: [],
 
 	head: null,

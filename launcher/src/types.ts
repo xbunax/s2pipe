@@ -23,6 +23,13 @@ export interface AppConfig {
 	idleStopSeconds: number;
 
 	picoSerial: string;
+	controllerMode: "serial" | "wifi";
+	picoWifiHost: string;
+	picoWifiPort: string;
+	picoWifiKey: string;
+	picoWifiDeviceId: string;
+	picoWifiDeviceName: string;
+	picoWifiAutoDiscover: boolean;
 
 	switchBtMac: string;
 	controllerBtMac: string;

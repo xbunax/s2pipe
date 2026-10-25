@@ -19,7 +19,7 @@
 static uint8_t const desc_device[] = {
 	0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40,
 	0x0D, 0x0F, 0x92, 0x00, 0x00, 0x01, 0x01, 0x02,
-	0x00, 0x01,
+	0x03, 0x01,
 };
 
 uint8_t const desc_hid_report[] = {
@@ -33,10 +33,11 @@ uint8_t const desc_hid_report[] = {
 
 _Static_assert(sizeof(desc_hid_report) == 86, "GP2040 / LUFA Pokken report descriptor is 86 bytes");
 
-#define CONFIG_LEN (TUD_CONFIG_DESC_LEN + (PAD_COUNT * TUD_HID_INOUT_DESC_LEN))
+#define CONFIG_LEN (TUD_CONFIG_DESC_LEN + (PAD_COUNT * TUD_HID_INOUT_DESC_LEN) + TUD_CDC_DESC_LEN)
+#define CONFIG_ITFS (PAD_COUNT + 2)
 
 static uint8_t const desc_configuration[] = {
-	TUD_CONFIG_DESCRIPTOR(1, PAD_COUNT, 0, CONFIG_LEN, 0x80, 500),
+	TUD_CONFIG_DESCRIPTOR(1, CONFIG_ITFS, 0, CONFIG_LEN, 0x80, 500),
 	HID_PAD(0, 0x01, 0x81),
 	HID_PAD(1, 0x02, 0x82),
 	HID_PAD(2, 0x03, 0x83),
@@ -45,9 +46,12 @@ static uint8_t const desc_configuration[] = {
 	HID_PAD(5, 0x06, 0x86),
 	HID_PAD(6, 0x07, 0x87),
 	HID_PAD(7, 0x08, 0x88),
+	/* CDC interface 8: setup/pairing line for the launcher. The Switch only
+	   consumes the HID interfaces above. */
+	TUD_CDC_DESCRIPTOR(8, 0, 0x89, 8, 0x09, 0x8A, 64),
 };
 
-_Static_assert(sizeof(desc_configuration) == 265, "eight Pokken IN+OUT interfaces = 265-byte config");
+_Static_assert(sizeof(desc_configuration) == 331, "eight Pokken IN+OUT interfaces + CDC = 331-byte config");
 _Static_assert(PAD_COUNT == 8, "usb_descriptors lists eight HID pads");
 
 /* All 16 endpoints poll at 1 ms, so the host must fit them in a single full-speed frame: 12000 bit
@@ -57,14 +61,25 @@ _Static_assert(PAD_COUNT == 8, "usb_descriptors lists eight HID pads");
 #define EP_BIT_TIMES(_bytes) (((((_bytes) + 13) * 8 * 7) / 6) + 100)
 
 _Static_assert(
-	(PAD_COUNT * 2) * EP_BIT_TIMES(CFG_TUD_HID_EP_BUFSIZE) <= 10800,
+	(PAD_COUNT * 2) * EP_BIT_TIMES(CFG_TUD_HID_EP_BUFSIZE) + EP_BIT_TIMES(8) <= 10800,
 	"1 ms endpoints exceed the full-speed periodic bandwidth budget"
 );
+
+static char usb_serial[17] = "0000000000000000";
+
+void usb_descriptors_set_serial(char const *serial) {
+	if (!serial) return;
+	size_t len = strlen(serial);
+	if (len > sizeof(usb_serial) - 1) len = sizeof(usb_serial) - 1;
+	memcpy(usb_serial, serial, len);
+	usb_serial[len] = '\0';
+}
 
 char const *string_desc_arr[] = {
 	(const char[]){ 0x09, 0x04 },
 	"HORI CO.,LTD.",
 	"POKKEN CONTROLLER",
+	usb_serial,
 };
 
 static uint16_t _desc_str[32];

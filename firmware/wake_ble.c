@@ -97,7 +97,7 @@ static void on_hci(uint8_t type, uint16_t channel, uint8_t *packet, uint16_t siz
 }
 
 void wake_ble_init(void) {
-	if (cyw43_arch_init()) return;
+	/* cyw43_arch_init() is called once by wifi_transport_platform_init(). */
 	led(true);
 	l2cap_init();
 	hci_cb.callback = &on_hci;
@@ -122,7 +122,7 @@ void wake_ble_request(uint8_t const sw[6], uint8_t const pad[6], uint16_t pid) {
 void wake_ble_poll(void) {
 	uint32_t now;
 
-	cyw43_arch_poll();
+	/* cyw43_arch_poll() is driven by wifi_transport_poll() in the main loop. */
 	now = to_ms_since_boot(get_absolute_time());
 
 	if (have_request && stack_ok && !writing_addr) {

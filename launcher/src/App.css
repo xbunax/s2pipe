@@ -748,3 +748,195 @@ fieldset.advanced > section > h2 {
 		filter: brightness(0.8);
 	}
 }
+
+/* =========================================================
+   Wi-Fi controller
+   ========================================================= */
+
+form .wifi-controller {
+	width: 100%;
+
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 14px;
+}
+
+form .wifi-devices {
+	width: 100%;
+
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+form .wifi-device {
+	width: 100%;
+
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+
+	padding: 10px 12px;
+
+	color: var(--text);
+	font-family: inherit;
+	text-align: left;
+
+	background: var(--elevated);
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+
+	cursor: pointer;
+}
+
+form .wifi-device strong {
+	font-size: 14px;
+	font-weight: 600;
+}
+
+form .wifi-device span {
+	color: var(--muted);
+	font-size: 12px;
+	line-height: 1.4;
+}
+
+form .wifi-device.active {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+form .wifi-setup {
+	width: 100%;
+
+	padding: 12px;
+
+	background: var(--elevated);
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+}
+
+form .wifi-setup strong {
+	display: block;
+	margin-bottom: 6px;
+
+	font-size: 14px;
+}
+
+form .wifi-setup p {
+	margin: 0 0 6px;
+
+	color: var(--muted);
+	font-size: 13px;
+	line-height: 1.45;
+}
+
+form .wifi-setup p:last-child {
+	margin-bottom: 0;
+}
+
+form .wifi-setup code {
+	color: var(--accent);
+	word-break: break-all;
+}
+
+form .wifi-status {
+	width: 100%;
+	margin: 0;
+	padding: 10px 12px;
+
+	color: var(--text);
+	font-size: 13px;
+	line-height: 1.45;
+
+	background: var(--bg);
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+}
+
+form .wifi-status.muted {
+	color: var(--muted);
+}
+
+form .key-row {
+	width: 100%;
+
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+form .key-row > input {
+	flex: 1;
+	min-width: 0;
+	min-height: 38px;
+
+	padding: 8px 12px;
+
+	color: var(--text);
+	font-family: inherit;
+	font-size: 14px;
+
+	background: var(--bg);
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+}
+
+form .key-row > input:focus {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+form .key-row > button {
+	flex-shrink: 0;
+	min-height: 38px;
+
+	padding: 8px 12px;
+
+	color: var(--text);
+	font-family: inherit;
+	font-size: 14px;
+	font-weight: 500;
+
+	background: var(--elevated);
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+
+	cursor: pointer;
+}
+
+form .key-row > button:hover {
+	border-color: var(--text);
+	background: var(--bg);
+}
+
+form .wifi-save-button {
+	width: 100%;
+	min-height: 40px;
+
+	padding: 10px 12px;
+
+	color: var(--bg);
+	font-family: inherit;
+	font-size: 14px;
+	font-weight: 700;
+
+	background: var(--accent);
+	border: 1px solid var(--accent);
+	border-radius: var(--radius);
+
+	cursor: pointer;
+
+	transition: filter 0.15s ease, opacity 0.15s ease;
+}
+
+form .wifi-save-button:hover {
+	filter: brightness(1.06);
+}
+
+form .wifi-save-button:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}

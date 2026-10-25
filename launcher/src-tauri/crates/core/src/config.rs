@@ -33,6 +33,14 @@ pub struct AppConfig {
     pub idle_stop_seconds: u32,
 
     pub pico_serial: String,
+    /// serial or wifi
+    pub controller_mode: String,
+    pub pico_wifi_host: String,
+    pub pico_wifi_port: String,
+    pub pico_wifi_key: String,
+    pub pico_wifi_device_id: String,
+    pub pico_wifi_device_name: String,
+    pub pico_wifi_auto_discover: bool,
 
     pub switch_bt_mac: String,
     pub controller_bt_mac: String,
@@ -64,6 +72,13 @@ impl Default for AppConfig {
             video_custom: String::new(),
             idle_stop_seconds: 15,
             pico_serial: String::new(),
+            controller_mode: "serial".into(),
+            pico_wifi_host: String::new(),
+            pico_wifi_port: "30100".into(),
+            pico_wifi_key: String::new(),
+            pico_wifi_device_id: String::new(),
+            pico_wifi_device_name: String::new(),
+            pico_wifi_auto_discover: true,
             switch_bt_mac: String::new(),
             controller_bt_mac: String::new(),
             controller_bt_pid: String::new(),

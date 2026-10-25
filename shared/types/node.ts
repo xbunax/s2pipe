@@ -6,11 +6,29 @@ export type CaptureStatus = {
 	error: string | null;
 };
 
+export type PicoTransportKind = "serial" | "wifi";
+
+export type PicoStats = {
+	tx: number;
+	rx: number;
+	auth: number;
+	dup: number;
+	old: number;
+	oow: number;
+	bad: number;
+};
+
 export type PicoStatus = {
 	connected: boolean;
+	transport: PicoTransportKind;
 	path: string | null;
+	device: string | null;
+	ip: string | null;
 	error: string | null;
 	wake: boolean;
+	latencyMs: number | null;
+	rssi: number | null;
+	stats: PicoStats | null;
 };
 
 export type StatusData = {

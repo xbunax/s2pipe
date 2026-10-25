@@ -1,20 +1,27 @@
 import { config } from "@/config.ts";
+import {
+	type ControllerTransport,
+	createTransport,
+	transportError,
+	type TransportOptions,
+} from "@/services/transport.ts";
 import { encodePacket, type WakeAddrs } from "@/utils/packet.ts";
+import { decodeHexKey } from "@/utils/wifi_protocol.ts";
 import { neutralPad, PAD_COUNT, type PadState, samePad, sanitizePad } from "@s2pipe/shared/types/pad";
 import type { PicoStatus } from "@s2pipe/shared/types/node";
 
-const SERIAL_BAUD = 921600;
 const FLUSH_MS = 8;
 const KEEPALIVE_TICKS = 12;
-const WRITE_TIMEOUT_MS = 250;
 const WAKE_MS = 10_000;
 
 const pads: PadState[] = Array.from({ length: PAD_COUNT }, () => neutralPad());
 
-let file: Deno.FsFile | null = null;
+let transport: ControllerTransport | null = null;
 let picoError: string | null = null;
+let lastLoggedError: string | null = null;
 let dirty = false;
 let flushing = false;
+let connecting = false;
 let wakeOnce: WakeAddrs | null = null;
 let wakeHold = false;
 let lastWakeMs = 0;
@@ -37,16 +44,24 @@ export function clearPad(index: number): void {
 }
 
 export function picoStatus(): PicoStatus {
+	const status = transport?.status() ?? null;
+	const kind = status?.kind ?? (config.picoTransport === "wifi" ? "wifi" : "serial");
 	return {
-		connected: file !== null,
-		path: config.picoSerial || null,
+		connected: status?.connected ?? false,
+		transport: kind,
+		path: status?.path ?? null,
+		device: status?.deviceName ?? status?.deviceId ?? null,
+		ip: status?.host ?? null,
 		error: picoError,
 		wake: Boolean(config.switchBtMac && config.controllerBtMac),
+		latencyMs: status?.latencyMs ?? null,
+		rssi: status?.rssi ?? null,
+		stats: status?.stats ?? null,
 	};
 }
 
 function queueWake(): void {
-	if (!file || !config.switchBtMac || !config.controllerBtMac) return;
+	if (!transport || !config.switchBtMac || !config.controllerBtMac) return;
 	wakeOnce = {
 		switchMac: config.switchBtMac,
 		padMac: config.controllerBtMac,
@@ -68,45 +83,49 @@ export function setWakeHold(on: boolean): void {
 	void flush();
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(message)), ms);
-		promise.then(
-			(value) => {
-				clearTimeout(timer);
-				resolve(value);
-			},
-			(error) => {
-				clearTimeout(timer);
-				reject(error);
-			},
-		);
-	});
-}
-
-async function writeAll(handle: Deno.FsFile, data: Uint8Array): Promise<void> {
-	let offset = 0;
-	while (offset < data.length) {
-		const n = await handle.write(data.subarray(offset));
-		if (n === 0) throw new Error("serial write stalled");
-		offset += n;
+function transportOptions(): TransportOptions | null {
+	if (config.picoTransport === "wifi") {
+		if (!config.picoWifiHost) {
+			picoError = "Wi-Fi controller address is empty";
+			return null;
+		}
+		if (!config.picoWifiKey) {
+			picoError = "Wi-Fi controller pairing key is empty";
+			return null;
+		}
+		try {
+			return {
+				kind: "wifi",
+				host: config.picoWifiHost,
+				port: config.picoWifiPort,
+				key: decodeHexKey(config.picoWifiKey),
+				deviceId: config.picoWifiDeviceId || undefined,
+				autoDiscover: config.picoWifiAutoDiscover,
+			};
+		} catch (error) {
+			picoError = transportError(error);
+			return null;
+		}
 	}
+
+	if (!config.picoSerial) {
+		picoError = null;
+		return null;
+	}
+	return { kind: "serial", path: config.picoSerial };
 }
 
 async function flush(): Promise<void> {
-	if (!file || !dirty || flushing) return;
+	const current = transport;
+	if (!current || !current.isConnected() || !dirty || flushing) return;
 	flushing = true;
 	try {
-		while (file && dirty) {
+		while (transport && dirty) {
 			dirty = false;
 			const wake = wakeOnce;
 			wakeOnce = null;
 			try {
-				await withTimeout(
-					writeAll(file, encodePacket(pads, wake)),
-					WRITE_TIMEOUT_MS,
-					"serial write timeout",
-				);
+				await transport.send(encodePacket(pads, wake));
 			} catch (error) {
 				if (wake) wakeOnce = wake;
 				throw error;
@@ -114,8 +133,12 @@ async function flush(): Promise<void> {
 			picoError = null;
 		}
 	} catch (error) {
-		picoError = serialError(error);
-		console.error(`pico ${picoError}`);
+		const message = transportError(error);
+		picoError = message;
+		if (message !== lastLoggedError) {
+			console.error(`pico ${message}`);
+			lastLoggedError = message;
+		}
 		closePico();
 	} finally {
 		flushing = false;
@@ -124,12 +147,9 @@ async function flush(): Promise<void> {
 
 function closePico(): void {
 	stopFlush();
-	try {
-		file?.close();
-	} catch {
-		// ignore
-	}
-	file = null;
+	const current = transport;
+	transport = null;
+	if (current) void current.disconnect();
 }
 
 function stopFlush(): void {
@@ -152,92 +172,65 @@ function startFlush(): void {
 	}, FLUSH_MS);
 }
 
-function windowsComPort(path: string): string | null {
-	const match = path.trim().match(/COM\d+/i);
-	return match ? match[0].toUpperCase() : null;
-}
-
-function serialPath(path: string): string {
-	if (Deno.build.os !== "windows") return path;
-	const com = windowsComPort(path);
-	return com ? `\\\\.\\${com}` : path;
-}
-
-function serialError(error: unknown): string {
-	const message = error instanceof Error ? error.message : String(error);
-	if (Deno.build.os === "linux" && /permission denied/i.test(message)) {
-		return `${message} (add your user to dialout, then replug)`;
-	}
-	return message;
-}
-
-async function setSerialBaud(path: string): Promise<void> {
-	let command: Deno.Command;
-	if (Deno.build.os === "windows") {
-		const com = windowsComPort(path);
-		if (!com) throw new Error(`invalid COM port: ${path}`);
-		command = new Deno.Command("mode", {
-			args: [`${com}:`, `BAUD=${SERIAL_BAUD}`, "PARITY=N", "DATA=8", "STOP=1", "XON=OFF", "OCTS=OFF", "RTS=OFF"],
-			stdout: "piped",
-			stderr: "piped",
-		});
-	} else {
-		command = new Deno.Command("stty", {
-			args: [
-				"-F",
-				path,
-				String(SERIAL_BAUD),
-				"raw",
-				"-echo",
-				"cs8",
-				"-parenb",
-				"-cstopb",
-				"-crtscts",
-				"-ixon",
-				"-ixoff",
-				"clocal",
-				"-hupcl",
-			],
-			stdout: "piped",
-			stderr: "piped",
-		});
-	}
-
-	const result = await command.output();
-	if (!result.success) {
-		const detail = new TextDecoder().decode(result.stderr).trim() ||
-			new TextDecoder().decode(result.stdout).trim() ||
-			`exit ${result.code}`;
-		throw new Error(`serial baud ${SERIAL_BAUD} failed: ${detail}`);
-	}
-
-	if (Deno.build.os === "windows") {
-		await new Promise((resolve) => setTimeout(resolve, 50));
-	}
-}
-
 async function openPico(): Promise<void> {
-	if (!config.picoSerial || file) return;
+	if (connecting || transport?.isConnected()) return;
 
+	if (transport && !transport.isConnected()) {
+		const stale = transport;
+		transport = null;
+		try {
+			await stale.disconnect();
+		} catch {
+			// ignore
+		}
+	}
+
+	const options = transportOptions();
+	if (!options) {
+		stopFlush();
+		return;
+	}
+
+	connecting = true;
 	try {
-		await setSerialBaud(config.picoSerial);
-		file = await Deno.open(serialPath(config.picoSerial), { read: true, write: true });
+		const next = createTransport(options);
+		await next.connect();
+		transport = next;
 		picoError = null;
-		console.info(`pico open ${config.picoSerial}`);
+		lastLoggedError = null;
+		console.info(`pico open ${next.describe()}`);
 		dirty = true;
 		startFlush();
 		if (wakeHold) queueWake();
 		await flush();
 	} catch (error) {
-		const message = serialError(error);
-		if (picoError !== message) console.error(`pico ${message}`);
+		const message = transportError(error);
 		picoError = message;
-		closePico();
+		if (message !== lastLoggedError) {
+			console.error(`pico ${message}`);
+			lastLoggedError = message;
+		}
+		if (transport) {
+			const failed = transport;
+			transport = null;
+			try {
+				await failed.disconnect();
+			} catch {
+				// ignore
+			}
+		}
+		stopFlush();
+	} finally {
+		connecting = false;
 	}
 }
 
 export async function startPico(): Promise<void> {
-	if (!config.picoSerial) {
+	if (config.picoTransport === "wifi" && (!config.picoWifiHost || !config.picoWifiKey)) {
+		transportOptions();
+		return;
+	}
+	if (config.picoTransport !== "wifi" && !config.picoSerial) {
 		picoError = null;
 		return;
 	}
@@ -245,7 +238,7 @@ export async function startPico(): Promise<void> {
 	await openPico();
 	if (retryTimer === null) {
 		retryTimer = setInterval(() => {
-			if (!file) void openPico();
+			if (!transport?.isConnected()) void openPico();
 		}, 5000);
 	}
 }
